@@ -35,9 +35,10 @@ class TestParseTrace:
 
     def test_required_fields_recognized(self):
         """Required fields (command type) recognized."""
-        trace = '[{"type": "search", "wl_count": 8}]'
+        trace = '[{"type": "search", "lba": 0, "wl_count": 8}]'
         commands = parse_trace(trace)
         assert commands[0]["type"] == "search"
+        assert commands[0]["lba"] == 0
         assert commands[0]["wl_count"] == 8
 
     def test_invalid_json_raises_parse_error(self):
@@ -106,11 +107,11 @@ class TestValidateCommand:
 
     def test_valid_search_command(self):
         """Valid search command passes validation."""
-        validate_command({"type": "search", "wl_count": 4})
+        validate_command({"type": "search", "lba": 0, "wl_count": 4})
 
     def test_valid_compute_command(self):
         """Valid compute command passes validation."""
-        validate_command({"type": "compute", "block_count": 2})
+        validate_command({"type": "compute", "lba": 0, "block_count": 2})
 
     def test_non_dict_raises_error(self):
         """Non-dictionary command raises ValidationError."""

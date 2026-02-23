@@ -1,7 +1,10 @@
 {
   "timing": {
-    "t_r": 75000,
-    "t_prog": 750000,
+    "technology": "mlc",
+    "t_r_lsb": 75000,
+    "t_r_msb": 100000,
+    "t_prog_lsb": 750000,
+    "t_prog_msb": 1200000,
     "t_bers": 3800000
   },
   "parallel": {

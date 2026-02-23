@@ -1,0 +1,10 @@
+[
+  {"type": "read", "lba": 0},
+  {"type": "read", "lba": 1},
+  {"type": "read", "lba": 2},
+  {"type": "read", "lba": 3},
+  {"type": "write", "lba": 4},
+  {"type": "write", "lba": 5},
+  {"type": "write", "lba": 6},
+  {"type": "write", "lba": 7}
+]

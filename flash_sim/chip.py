@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from typing import Optional
-from .config import FlashConfig, TimingConfig, ParallelConfig
+from .config import FlashConfig, TimingConfig, ParallelConfig, FlashGeometry, FlashAddress, FlashTechnology
 
 
 class FlashChip:
@@ -10,6 +10,9 @@ class FlashChip:
 
     Supports basic storage operations (read, write, erase) and
     advanced operations (search with parallel WL, compute with parallel blocks).
+
+    For MLC and TLC flash, different page types (LSB/CSB/MSB) have
+    different read and program latencies.
     """
 
     def __init__(self, config: Optional[FlashConfig] = None):
@@ -30,30 +33,78 @@ class FlashChip:
         """Get parallel configuration."""
         return self.config.parallel
 
-    def get_read_latency(self, address: int) -> int:
-        """Calculate read operation latency.
+    @property
+    def geometry(self) -> FlashGeometry:
+        """Get geometry configuration."""
+        return self.config.geometry
+
+    @property
+    def technology(self) -> FlashTechnology:
+        """Get flash technology type."""
+        return self.timing.technology
+
+    def page_to_address(self, page: int) -> FlashAddress:
+        """Convert a linear page number to physical flash address.
 
         Args:
-            address: Page address to read from.
+            page: Linear page number (0-based).
+
+        Returns:
+            FlashAddress representing the physical location.
+
+        Raises:
+            ValueError: If page number is out of range.
+        """
+        return self.geometry.page_to_address(page, self.technology)
+
+    def block_to_address(self, block: int) -> FlashAddress:
+        """Convert a linear block number to physical flash address.
+
+        Args:
+            block: Linear block number (0-based).
+
+        Returns:
+            FlashAddress representing the physical location.
+
+        Raises:
+            ValueError: If block number is out of range.
+        """
+        return self.geometry.block_to_address(block)
+
+    def get_read_latency(self, address: int) -> int:
+        """Calculate read operation latency based on page type.
+
+        For MLC/TLC flash, LSB pages have different latency than CSB/MSB pages.
+
+        Args:
+            address: Page address to read from (used to determine page type).
 
         Returns:
             Latency in nanoseconds (tR).
         """
-        return self.timing.t_r
+        # Get physical address to determine page type
+        addr = self.page_to_address(address)
+        return self.timing.get_read_latency(addr.page_type)
 
     def get_write_latency(self, address: int) -> int:
-        """Calculate write (program) operation latency.
+        """Calculate write (program) operation latency based on page type.
+
+        For MLC/TLC flash, LSB pages have different latency than CSB/MSB pages.
 
         Args:
-            address: Page address to write to.
+            address: Page address to write to (used to determine page type).
 
         Returns:
             Latency in nanoseconds (tPROG).
         """
-        return self.timing.t_prog
+        # Get physical address to determine page type
+        addr = self.page_to_address(address)
+        return self.timing.get_program_latency(addr.page_type)
 
     def get_erase_latency(self, block_address: int) -> int:
         """Calculate erase operation latency.
+
+        Erase latency is the same regardless of page type.
 
         Args:
             block_address: Block address to erase.
@@ -62,6 +113,28 @@ class FlashChip:
             Latency in nanoseconds (tBERS).
         """
         return self.timing.t_bers
+
+    def get_read_latency_by_page_type(self, page_type: int) -> int:
+        """Get read latency based on page type.
+
+        Args:
+            page_type: Page type (0=LSB, 1=CSB, 2=MSB)
+
+        Returns:
+            Read latency in nanoseconds
+        """
+        return self.timing.get_read_latency(page_type)
+
+    def get_program_latency_by_page_type(self, page_type: int) -> int:
+        """Get program latency based on page type.
+
+        Args:
+            page_type: Page type (0=LSB, 1=CSB, 2=MSB)
+
+        Returns:
+            Program latency in nanoseconds
+        """
+        return self.timing.get_program_latency(page_type)
 
     def get_search_latency(self, wl_count: int) -> int:
         """Calculate search operation latency with parallel WL activation.
@@ -72,6 +145,8 @@ class FlashChip:
         The latency model:
         - Base sensing time equals tR (one read cycle)
         - Additional overhead for parallel WL coordination
+
+        Note: Search uses LSB latency (simplified model, no multi-value consideration).
 
         Args:
             wl_count: Number of Word Lines to activate in parallel.
@@ -90,9 +165,9 @@ class FlashChip:
             )
 
         # Search latency model:
-        # - Parallel WL sensing takes base tR time
+        # - Parallel WL sensing takes base tR time (LSB)
         # - Overhead scales with log2 of WL count for comparison logic
-        base_latency = self.timing.t_r
+        base_latency = self.timing.t_r_lsb
         # Parallel overhead: ~10% per doubling of WL count
         import math
         parallel_factor = 1.0 + 0.1 * math.log2(max(1, wl_count))
@@ -107,6 +182,8 @@ class FlashChip:
         The latency model:
         - Base sensing time equals tR (one read cycle)
         - Additional overhead for multi-block current accumulation
+
+        Note: Compute uses LSB latency (simplified model, no multi-value consideration).
 
         Args:
             block_count: Number of Blocks to activate in parallel.
@@ -125,9 +202,9 @@ class FlashChip:
             )
 
         # Compute latency model:
-        # - Parallel block sensing takes base tR time
+        # - Parallel block sensing takes base tR time (LSB)
         # - MAC accumulation adds overhead proportional to block count
-        base_latency = self.timing.t_r
+        base_latency = self.timing.t_r_lsb
         # Linear overhead for current accumulation on bit lines
         accumulation_factor = 1.0 + 0.15 * (block_count - 1)
         return int(base_latency * accumulation_factor)
