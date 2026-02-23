@@ -1,7 +1,7 @@
 [
-  {"type": "read", "address": 0},
-  {"type": "read", "address": 256},
-  {"type": "write", "address": 512},
-  {"type": "write", "address": 768},
-  {"type": "erase", "block_address": 0}
+  {"type": "read", "lba": 1033},
+  {"type": "read", "lba": 1034},
+  {"type": "write", "lba": 512},
+  {"type": "write", "lba": 768},
+  {"type": "erase", "lba": 0}
 ]

@@ -16,9 +16,9 @@ class TestSimulatorBasic:
 
     def test_custom_config(self):
         """Simulator accepts custom configuration."""
-        config = FlashConfig(timing=TimingConfig(t_r=100_000))
+        config = FlashConfig(timing=TimingConfig(t_r_lsb=100_000))
         sim = FlashSimulator(config)
-        assert sim.config.timing.t_r == 100_000
+        assert sim.config.timing.t_r_lsb == 100_000
 
 
 class TestExecuteCommand:
@@ -178,14 +178,14 @@ class TestConfiguredLatencies:
 
     def test_configured_read_latency(self):
         """Read latency reflects configuration."""
-        config = FlashConfig(timing=TimingConfig(t_r=50_000))
+        config = FlashConfig(timing=TimingConfig(t_r_lsb=50_000))
         sim = FlashSimulator(config)
         result = sim.execute_command({"type": "read"})
         assert result["latency_ns"] == 50_000
 
     def test_configured_write_latency(self):
         """Write latency reflects configuration."""
-        config = FlashConfig(timing=TimingConfig(t_prog=500_000))
+        config = FlashConfig(timing=TimingConfig(t_prog_lsb=500_000))
         sim = FlashSimulator(config)
         result = sim.execute_command({"type": "write"})
         assert result["latency_ns"] == 500_000

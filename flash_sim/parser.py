@@ -15,26 +15,28 @@ class ValidationError(Exception):
     pass
 
 
+# Command schema using LBA-based addressing
+# Each command operates on LBA which maps to physical addresses via FTL
 COMMAND_SCHEMA = {
     "read": {
-        "required": ["type"],
-        "optional": ["address"],
+        "required": [],
+        "optional": ["lba", "address"],  # address for backward compat
     },
     "write": {
-        "required": ["type"],
-        "optional": ["address", "data"],
+        "required": [],
+        "optional": ["lba", "address", "data"],  # address for backward compat
     },
     "erase": {
-        "required": ["type"],
-        "optional": ["block_address", "address"],
+        "required": [],
+        "optional": ["lba", "address"],  # LBA maps to block for erase
     },
     "search": {
-        "required": ["type"],
+        "required": ["lba"],  # LBA determines the target block
         "optional": ["wl_count", "pattern"],
     },
     "compute": {
-        "required": ["type"],
-        "optional": ["block_count", "weights"],
+        "required": ["lba"],  # LBA determines the starting block
+        "optional": ["block_count", "layer", "weights"],
     },
 }
 
