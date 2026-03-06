@@ -84,7 +84,7 @@ class BlockInfo:
     """Information about a block."""
     status: str = BlockStatus.FREE
     pe_count: int = 0  # Program-Erase cycle count
-    pages: Dict[int, PageInfo] = None  # page_index -> PageInfo
+    pages: Dict[int, PageInfo] = dict()  # page_index -> PageInfo
 
     def __post_init__(self):
         if self.pages is None:
