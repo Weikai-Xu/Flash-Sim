@@ -1,0 +1,8 @@
+1. 阅读MQSim/src/ssd/文件夹中的TSU_Base.h, TSU_Base.cpp, TSU_OutofOrder.h, TSU_OutofOrder.cpp, NVM_PHY_ONFI_NVDDR2.h, NVM_PHY_ONFI_NVDDR2.cpp
+这些文件，重点关注其中从process_chip_requests()开始的函数调用链
+2. 阅读Flash-Sim/flash_sim/中的FTL.py文件
+3. 将MQSim中的process_chip_requests()开始的调用链条转成pyhton语言，对应到Flash_Sim中FTL.py文件中的函数实现，
+其中，class TSU中的try_activate(chip_id)函数时跟process_chip_requests()对标的。try_read()和service_read_transaction()对标，
+以此类推。需要注意的是，Flash_Sim中额外提供了SEARCH和COMPUTE这两种操作，它们有专用的chip，这些chip不可以被传统的读写操作access，这在
+chipBKE中会有相应的状态实现划分，因此你可以先不管跟SEARCH和COMPUTE操作有关的部分。
+    对于NVM_PHY的实现请写在Flash-Sim/flash_sim/PHY.py文件中

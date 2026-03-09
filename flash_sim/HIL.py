@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 from queue import Queue
+from typing import Mapping
 
 from common import *
 from FTL import FTL, Transaction
 from Cache import Cache
 import PCIe_link
 import utils
+from math import ceil
 
 
 class HIL(sim_object):
@@ -26,31 +28,45 @@ class HIL(sim_object):
         self.receive_pcie_message(event.param)
 
     def segment(self, req):
-        """根据 req 的 lpa 范围拆成 transaction_list。"""
+        """根据 req 的 lha_start 和 size 范围拆成 transaction_list。"""
+        # only segment once
         if req.transaction_list:
             return
-        start = getattr(req, "lpa_start", 0)
-        count = getattr(req, "lpa_count", 1)
-        if req.type in (READ, WRITE):
-            for i in range(count):
-                lpa = start + i
-                tr = Transaction(source_req=req, lpa=lpa, bitmap=1)
-                tr.mvpn = lpa // 512
+        # only segment read and write requests
+        if req.type in (SEARCH, COMPUTE):
+            start_sub_plane_id = lha_start - xxx
+            """... to be completed """
+
+        if req.type in (READ, WRITE, MAPPING):
+            start_lha = req.lha_start
+            lha_count = req.size
+
+            start_lpa = start_lha // SECTOR_PER_PAGE
+            head_margin_sectors  = start_lha % SECTOR_PER_PAGE
+            tail_margin_sectors = (SECTOR_PER_PAGE - (lha_count + head_margin_sectors)%SECTOR_PER_PAGE) % SECTOR_PER_PAGE
+
+            lpa_count = max(1, ceil((lha_count + head_margin_sectors) / SECTOR_PER_PAGE))
+            if lpa_count == 1: # only access one page
+                bitmap = [0] * head_margin_sectors + [1] * lha_count + [0] * tail_margin_sectors
+                tr = Transaction(source_req=req, lpa=start_lpa, sector_bitmap=bitmap)
                 req.transaction_list.append(tr)
-        elif req.type == SEARCH:
-            start_bank_id = utils.translate_lpa_to_search_bank_id(start)
-            bank_count = count // PAGE_NO_PER_SEARCH_BANK
-            for i in range(count):
-                bank_id = start_bank_id + i
-                tr = Transaction(source_req=req, bank_id=bank_id, bitmap=1)
+                return
+            # access multiple pages
+            for i in range(lpa_count):
+                lpa = start_lpa + i
+                if i == 0:
+                    sector_bitmap = [1] * head_margin_sectors + [0] * (SECTOR_PER_PAGE - head_margin_sectors)
+                elif i == lpa_count - 1:
+                    sector_bitmap = [1] * (lha_count + head_margin_sectors - tail_margin_sectors) + [0] * tail_margin_sectors
+                else:
+                    sector_bitmap = [1] * SECTOR_PER_PAGE
+                tr = Transaction(source_req=req, lpa=lpa, sector_bitmap=sector_bitmap)
                 req.transaction_list.append(tr)
-        elif req.type == COMPUTE:
-            start_bank_id = utils.translate_lpa_to_compute_bank_id(start)
-            bank_count = count // PAGE_NO_PER_COMPUTE_BANK
-            for i in range(count):
-                bank_id = start_bank_id + i
-                tr = Transaction(source_req=req, bank_id=bank_id, bitmap=1)
-                req.transaction_list.append(tr)
+
+        raise ValueError("Unexpected req type!")
+
+        
+       
 
     def fetch_data(self, req):
         """向 host 请求 WRITE/SEARCH/COMPUTE 所需数据（占位）。"""
@@ -67,8 +83,8 @@ class HIL(sim_object):
         req = message.source_req
         target_queue.put(req)
         if message.type in (READ_REQ, WRITE_DATA, SEARCH_INPUT, COMPUTE_INPUT):
-            self.segment(req)
-            self.cache_manager.service(req)
+            self.segment(req) # 将req拆分成transaction_list
+            self.cache_manager.service(req) # 查询cache，如果命中则直接返回
             if req.is_serviced():
                 comp_msg = PCIe_link.PCIe_message(
                     type=REQ_COMP, payload=None, source_req=req, sq_id=req.sq_id

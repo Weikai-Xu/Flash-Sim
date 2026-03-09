@@ -1,0 +1,394 @@
+# -*- coding: utf-8 -*-
+"""Flash 物理层：芯片/Die 状态管理与事件驱动命令执行。
+
+对标 MQSim NVM_PHY_ONFI_NVDDR2。
+SEARCH/COMPUTE 专属操作由子类或独立路径扩展，此处仅实现 READ/WRITE/ERASE。
+"""
+
+from typing import Dict, List, Tuple, Optional, Callable
+from common import (
+    ChipStatus, DieStatus, SimEvent, sim_object,
+    CHANNEL_NO, CHIP_PER_CHANNEL, DIE_PER_CHIP,
+    CURRENT_TIME, schedule_event,
+    PHY_CMD_ADDR_TIME, PHY_DATA_IN_TIME, PHY_DATA_OUT_TIME,
+    T_READ_LSB, T_PROG, T_BERS,
+    PHY_READ_CMD_TRANSFERRED, PHY_WRITE_CMD_TRANSFERRED, PHY_ERASE_CMD_TRANSFERRED,
+    PHY_READ_DATA_TRANSFERRED,
+    PHY_CHIP_READ_COMPLETE, PHY_CHIP_WRITE_COMPLETE, PHY_CHIP_ERASE_COMPLETE,
+)
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _op_kind(trans_type: str) -> str:
+    """Derive low-level operation kind from transaction type string.
+
+    Transaction types are queue-key strings such as 'user_read', 'gc_write',
+    'gc_erase', 'mapping_read', etc.
+    """
+    t = trans_type.lower()
+    if "erase" in t:
+        return "erase"
+    if "write" in t:
+        return "write"
+    return "read"
+
+
+# ── Data structures ───────────────────────────────────────────────────────────
+
+class ActiveCommandInfo:
+    """Bundles an operation kind with its pending transactions.
+
+    Analogous to MQSim's Flash_Command plus its ActiveTransactions list.
+    """
+
+    def __init__(self, cmd_type: str, transactions: list):
+        self.cmd_type: str = cmd_type          # "read" | "write" | "erase"
+        self.transactions: list = transactions
+
+
+class DieBKE:
+    """Die-level book-keeping entry.
+
+    对标 MQSim DieBookKeepingEntry。
+    """
+
+    def __init__(self, die_id: int):
+        self.die_id: int = die_id
+        self.status: DieStatus = DieStatus.IDLE
+        self.active_command: Optional[ActiveCommandInfo] = None
+        self.suspended_command: Optional[ActiveCommandInfo] = None
+        self.expected_finish_time: int = 0
+        self._remaining_on_suspend: int = 0    # time left when suspend happened
+
+    def prepare_suspend(self, current_time: int) -> None:
+        """Save active command to suspended slot and record remaining time."""
+        self._remaining_on_suspend = max(0, self.expected_finish_time - current_time)
+        self.suspended_command = self.active_command
+        self.active_command = None
+
+    def prepare_resume(self) -> int:
+        """Restore suspended command to active; return remaining execution time."""
+        self.active_command = self.suspended_command
+        self.suspended_command = None
+        return self._remaining_on_suspend
+
+    def clear_command(self) -> None:
+        """Mark all active transactions completed and release the command slot."""
+        if self.active_command:
+            for tr in self.active_command.transactions:
+                tr.completed = True
+        self.active_command = None
+
+
+class ChipBKE:
+    """Chip-level book-keeping entry.
+
+    对标 MQSim ChipBookKeepingEntry。TSU 直接读取此类的字段来做调度决策。
+    """
+
+    def __init__(self, chip_id: Tuple[int, int]):
+        self.chip_id: Tuple[int, int] = chip_id
+        self.status: ChipStatus = ChipStatus.IDLE
+        self.EnableWriteSuspend: bool = True
+        self.EnableEraseSuspend: bool = True
+        self.HasSuspendedCommands: bool = False
+        self.Expected_Finish_Time: int = 0
+        self.No_of_active_dies: int = 0
+        self.dies: Dict[int, DieBKE] = {
+            die_id: DieBKE(die_id) for die_id in range(DIE_PER_CHIP)
+        }
+        # Transactions whose chip-internal read finished; waiting for data-out transfer
+        self._waiting_data_out: list = []
+
+    def get_die_bke(self, die_id: int) -> DieBKE:
+        return self.dies[die_id]
+
+
+# ── PHY class ─────────────────────────────────────────────────────────────────
+
+class PHY(sim_object):
+    """Flash 物理层。
+
+    对标 MQSim NVM_PHY_ONFI_NVDDR2，实现：
+    - 接收 TSU 下发的命令（send_command_to_chip）
+    - 通过仿真事件驱动 chip/channel 状态机
+    - 事务完成时通过回调通知 TSU 及上层
+    """
+
+    def __init__(self):
+        self._channel_busy: List[bool] = [False] * CHANNEL_NO
+        self._chip_bkes: Dict[Tuple[int, int], ChipBKE] = {}
+
+        # Callback signal lists
+        self._channel_idle_cbs: List[Callable[[int], None]] = []
+        self._chip_idle_cbs: List[Callable[[Tuple[int, int]], None]] = []
+        self._transaction_serviced_cbs: List[Callable] = []
+
+    # ── Accessors ─────────────────────────────────────────────────────────────
+
+    def get_chip_bke(self, chip_id: Tuple[int, int]) -> ChipBKE:
+        if chip_id not in self._chip_bkes:
+            self._chip_bkes[chip_id] = ChipBKE(chip_id)
+        return self._chip_bkes[chip_id]
+
+    def channel_is_busy(self, channel_id: int) -> bool:
+        return self._channel_busy[channel_id]
+
+    # ── Callback registration (対标 ConnectTo*Signal) ──────────────────────────
+
+    def connect_channel_idle_signal(self, cb: Callable[[int], None]) -> None:
+        self._channel_idle_cbs.append(cb)
+
+    def connect_chip_idle_signal(self, cb: Callable[[Tuple[int, int]], None]) -> None:
+        self._chip_idle_cbs.append(cb)
+
+    def connect_transaction_serviced_signal(self, cb: Callable) -> None:
+        self._transaction_serviced_cbs.append(cb)
+
+    def _broadcast_channel_idle(self, channel_id: int) -> None:
+        # Priority: if any chip in this channel has completed a read but is still
+        # holding data (waiting_data_out non-empty), start the data-out transfer
+        # immediately before handing the channel to the TSU for new commands.
+        # This mirrors MQSim's logic of checking WaitingReadTXCount in Execute_simulator_event.
+        for chip_no in range(CHIP_PER_CHANNEL):
+            chip_id_check = (channel_id, chip_no)
+            if chip_id_check not in self._chip_bkes:
+                continue
+            bke = self._chip_bkes[chip_id_check]
+            if not bke._waiting_data_out:
+                continue
+            # Find the die whose active_command is still set (holding the read data)
+            for die_id, die_bke in bke.dies.items():
+                if die_bke.active_command is not None:
+                    self._transfer_read_data(chip_id_check, die_id)
+                    return   # channel is BUSY again; TSU will be notified later
+        for cb in self._channel_idle_cbs:
+            cb(channel_id)
+
+    def _broadcast_chip_idle(self, chip_id: Tuple[int, int]) -> None:
+        for cb in self._chip_idle_cbs:
+            cb(chip_id)
+
+    def _broadcast_transaction_serviced(self, tr) -> None:
+        for cb in self._transaction_serviced_cbs:
+            cb(tr)
+
+    # ── TSU → PHY interface ────────────────────────────────────────────────────
+
+    def send_command_to_chip(
+        self,
+        chip_id: Tuple[int, int],
+        transactions: list,
+        suspension_required: bool,
+    ) -> None:
+        """下发命令到 chip，对标 NVM_PHY_ONFI_NVDDR2::Send_command_to_chip()。
+
+        1. 若 suspension_required 且 chip 非 IDLE，先执行挂起操作。
+        2. 将新命令登记为 Die 的 active_command。
+        3. 根据操作类型调度命令传输完成事件并将 channel 置为 BUSY。
+        """
+        if not transactions:
+            return
+
+        chip_bke = self.get_chip_bke(chip_id)
+        channel_id = chip_id[0]
+        now = CURRENT_TIME()
+
+        tr0 = transactions[0]
+        op = _op_kind(tr0.type)
+        die_id = tr0.address[2]   # (channel, chip, die, plane, block, page)
+        die_bke = chip_bke.get_die_bke(die_id)
+
+        # 1. Suspend the currently running operation if requested
+        if suspension_required and chip_bke.status != ChipStatus.IDLE:
+            die_bke.prepare_suspend(now)
+            chip_bke.HasSuspendedCommands = True
+
+        # 2. Register new command on the die
+        die_bke.active_command = ActiveCommandInfo(op, transactions)
+        chip_bke.No_of_active_dies += 1
+
+        # 3. Schedule the appropriate command-transfer event
+        if op == "read":
+            finish = now + PHY_CMD_ADDR_TIME
+            ev = PHY_READ_CMD_TRANSFERRED
+        elif op == "write":
+            finish = now + PHY_CMD_ADDR_TIME + PHY_DATA_IN_TIME
+            ev = PHY_WRITE_CMD_TRANSFERRED
+        else:  # erase
+            finish = now + PHY_CMD_ADDR_TIME
+            ev = PHY_ERASE_CMD_TRANSFERRED
+
+        die_bke.expected_finish_time = finish
+        chip_bke.Expected_Finish_Time = finish
+        self._channel_busy[channel_id] = True
+        schedule_event(ev, self, (chip_id, die_id), finish)
+
+    # ── sim_object event handler ───────────────────────────────────────────────
+
+    def execute(self, event: SimEvent) -> None:
+        """处理 PHY 仿真事件，对标 Execute_simulator_event()。"""
+        ev_type = event.type
+        chip_id, die_id = event.param
+        chip_bke = self.get_chip_bke(chip_id)
+        die_bke = chip_bke.get_die_bke(die_id)
+        channel_id = chip_id[0]
+        now = CURRENT_TIME()
+
+        # ── Command/address transfer phase complete ────────────────────────────
+
+        if ev_type == PHY_READ_CMD_TRANSFERRED:
+            # Cmd+addr sent to chip; chip begins internal read; release channel.
+            chip_bke.status = ChipStatus.READ
+            self._channel_busy[channel_id] = False
+            finish = now + T_READ_LSB
+            die_bke.expected_finish_time = finish
+            chip_bke.Expected_Finish_Time = finish
+            schedule_event(PHY_CHIP_READ_COMPLETE, self, (chip_id, die_id), finish)
+            self._broadcast_channel_idle(channel_id)
+
+        elif ev_type == PHY_WRITE_CMD_TRANSFERRED:
+            # Cmd+data sent to chip; chip begins internal program; release channel.
+            is_gc = "gc" in tr0_type(die_bke)
+            chip_bke.status = ChipStatus.GC_WRITE if is_gc else ChipStatus.WRITE
+            self._channel_busy[channel_id] = False
+            finish = now + T_PROG
+            die_bke.expected_finish_time = finish
+            chip_bke.Expected_Finish_Time = finish
+            schedule_event(PHY_CHIP_WRITE_COMPLETE, self, (chip_id, die_id), finish)
+            self._broadcast_channel_idle(channel_id)
+
+        elif ev_type == PHY_ERASE_CMD_TRANSFERRED:
+            # Cmd sent to chip; chip begins internal erase; release channel.
+            chip_bke.status = ChipStatus.ERASE
+            self._channel_busy[channel_id] = False
+            finish = now + T_BERS
+            die_bke.expected_finish_time = finish
+            chip_bke.Expected_Finish_Time = finish
+            schedule_event(PHY_CHIP_ERASE_COMPLETE, self, (chip_id, die_id), finish)
+            self._broadcast_channel_idle(channel_id)
+
+        # ── Chip-internal operation complete ──────────────────────────────────
+
+        elif ev_type == PHY_CHIP_READ_COMPLETE:
+            self._handle_chip_ready(chip_id, die_id, "read")
+
+        elif ev_type == PHY_CHIP_WRITE_COMPLETE:
+            self._handle_chip_ready(chip_id, die_id, "write")
+
+        elif ev_type == PHY_CHIP_ERASE_COMPLETE:
+            self._handle_chip_ready(chip_id, die_id, "erase")
+
+        # ── Read data-out phase complete ──────────────────────────────────────
+
+        elif ev_type == PHY_READ_DATA_TRANSFERRED:
+            # Data DMA'd from chip to controller; complete all waiting read transactions.
+            for tr in chip_bke._waiting_data_out:
+                tr.completed = True
+                self._broadcast_transaction_serviced(tr)
+            chip_bke._waiting_data_out.clear()
+            die_bke.active_command = None
+            chip_bke.No_of_active_dies -= 1
+            self._channel_busy[channel_id] = False
+
+            if chip_bke.HasSuspendedCommands:
+                self._send_resume_command(chip_id)
+            else:
+                if chip_bke.No_of_active_dies == 0:
+                    chip_bke.status = ChipStatus.IDLE
+                    self._broadcast_chip_idle(chip_id)
+                self._broadcast_channel_idle(channel_id)
+
+    # ── Internal helpers ──────────────────────────────────────────────────────
+
+    def _handle_chip_ready(
+        self,
+        chip_id: Tuple[int, int],
+        die_id: int,
+        cmd_type: str,
+    ) -> None:
+        """Chip 内部操作完成后的处理，对标 handle_ready_signal_from_chip()。"""
+        chip_bke = self.get_chip_bke(chip_id)
+        die_bke = chip_bke.get_die_bke(die_id)
+        channel_id = chip_id[0]
+
+        if cmd_type == "read":
+            # Queue transactions for data-out; start DMA if channel is free.
+            if die_bke.active_command:
+                chip_bke._waiting_data_out.extend(die_bke.active_command.transactions)
+            if not self._channel_busy[channel_id]:
+                self._transfer_read_data(chip_id, die_id)
+            # If channel busy, _broadcast_channel_idle will trigger _transfer_read_data
+            # via TSU callback → try_activate → (no more queued work) → the waiting
+            # data-out will be picked up when channel next becomes idle.
+            # For simplicity, we handle it here: if channel became idle after our
+            # check, the data will stay in _waiting_data_out until the next idle event.
+
+        else:  # write or erase
+            if die_bke.active_command:
+                for tr in die_bke.active_command.transactions:
+                    tr.completed = True
+                    self._broadcast_transaction_serviced(tr)
+            die_bke.active_command = None
+            chip_bke.No_of_active_dies -= 1
+
+            if chip_bke.No_of_active_dies == 0:
+                if chip_bke.HasSuspendedCommands:
+                    self._send_resume_command(chip_id)
+                else:
+                    chip_bke.status = ChipStatus.IDLE
+                    self._broadcast_channel_idle(channel_id)
+                    self._broadcast_chip_idle(chip_id)
+
+    def _transfer_read_data(
+        self,
+        chip_id: Tuple[int, int],
+        die_id: int,
+    ) -> None:
+        """启动读数据回传阶段，对标 transfer_read_data_from_chip()。"""
+        channel_id = chip_id[0]
+        self._channel_busy[channel_id] = True
+        schedule_event(
+            PHY_READ_DATA_TRANSFERRED, self, (chip_id, die_id),
+            CURRENT_TIME() + PHY_DATA_OUT_TIME,
+        )
+
+    def _send_resume_command(self, chip_id: Tuple[int, int]) -> None:
+        """恢复被挂起的命令，对标 send_resume_command_to_chip()。"""
+        chip_bke = self.get_chip_bke(chip_id)
+        now = CURRENT_TIME()
+
+        for die_bke in chip_bke.dies.values():
+            if die_bke.suspended_command is None:
+                continue
+            remaining = die_bke.prepare_resume()
+            if remaining <= 0:
+                # Fallback: use a minimum slice of the original operation time
+                remaining = max(T_PROG // 10, 1)
+            cmd_type = die_bke.active_command.cmd_type
+
+            if cmd_type == "write":
+                is_gc = "gc" in die_bke.active_command.transactions[0].type
+                chip_bke.status = ChipStatus.GC_WRITE if is_gc else ChipStatus.WRITE
+                finish = now + remaining
+                die_bke.expected_finish_time = finish
+                chip_bke.Expected_Finish_Time = finish
+                schedule_event(PHY_CHIP_WRITE_COMPLETE, self, (chip_id, die_bke.die_id), finish)
+            elif cmd_type == "erase":
+                chip_bke.status = ChipStatus.ERASE
+                finish = now + remaining
+                die_bke.expected_finish_time = finish
+                chip_bke.Expected_Finish_Time = finish
+                schedule_event(PHY_CHIP_ERASE_COMPLETE, self, (chip_id, die_bke.die_id), finish)
+
+        chip_bke.HasSuspendedCommands = False
+
+
+# ── Module-level utility ──────────────────────────────────────────────────────
+
+def tr0_type(die_bke: DieBKE) -> str:
+    """Safely extract the type string of the first transaction in active_command."""
+    if die_bke.active_command and die_bke.active_command.transactions:
+        return die_bke.active_command.transactions[0].type
+    return ""
