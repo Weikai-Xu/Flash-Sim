@@ -284,7 +284,8 @@ class TSU:
 
         if q1 is None:
             return False
-        return self.issue_command(chip_id, q1, q2, suspension_required)
+        self.issue_command(chip_id, q1, q2, suspension_required)
+        return True
 
     def try_write(self, chip_id) -> bool:
         """Try to issue a write command to the chip.
@@ -319,7 +320,8 @@ class TSU:
 
         if q1 is None:
             return False
-        return self.issue_command(chip_id, q1, None, suspension_required)
+        self.issue_command(chip_id, q1, None, suspension_required)
+        return True
 
     def try_erase(self, chip_id) -> bool:
         """Try to issue an erase command to the chip.
@@ -334,15 +336,40 @@ class TSU:
         q = self.queues[chip_id[0]][chip_id[1]].get("gc_erase")
         if not q:
             return False
-        return self.issue_command(chip_id, q, None, False)
+        self.issue_command(chip_id, q, None, False)
+        return True
 
     def try_compute(self, chip_id) -> bool:
-        """Placeholder: COMPUTE operations on dedicated chips."""
-        return False
+        """Try to issue a compute command to the chip.
+
+        Compute 只能在 chip IDLE 时触发，直接选取 user_compute 队列，
+        调用 issue_compute_command 下发。
+        """
+        chip_bke = self.PHY.get_chip_bke(chip_id)
+        if chip_bke.status != ChipStatus.IDLE:
+            return False
+
+        q = self.queues[chip_id[0]][chip_id[1]].get("user_compute")
+        if not q:
+            return False
+        self.issue_compute_command(chip_id, q)
+        return True
 
     def try_search(self, chip_id) -> bool:
-        """Placeholder: SEARCH operations on dedicated chips."""
-        return False
+        """Try to issue a search command to the chip.
+
+        Search 只能在 chip IDLE 时触发，直接选取 user_search 队列，
+        调用 issue_search_command 下发。
+        """
+        chip_bke = self.PHY.get_chip_bke(chip_id)
+        if chip_bke.status != ChipStatus.IDLE:
+            return False
+
+        q = self.queues[chip_id[0]][chip_id[1]].get("user_search")
+        if not q:
+            return False
+        self.issue_search_command(chip_id, q)
+        return True
 
     # ── Command dispatch to PHY ───────────────────────────────────────────────
 
@@ -352,7 +379,7 @@ class TSU:
         q1: list,
         q2,
         suspension_required: bool,
-    ) -> bool:
+    ) -> None:
         """按 die 粒度选取满足 plane 并行条件的 transactions 并下发给 PHY。
 
         对标 TSU_Base::issue_command_to_chip()。
@@ -422,9 +449,97 @@ class TSU:
                         q2.remove(tr)
                 self.PHY.send_command_to_chip(chip_id, dispatch_slots, suspension_required)
                 dispatch_slots = []
-                return True
+        return
 
-        return False
+    def issue_search_command(self, chip_id, q: list) -> None:
+        """按 die-plane 粒度选取 search transactions 并下发给 PHY。
+
+        Search 地址最细粒度为 address[4]（sub_plane/操作单元），address[5] 恒为 0。
+        约束：每个 die 的每个 plane 中最多选中一个操作单元，且同一 die 内不同
+        plane 选中的 transaction 必须有相同的 sub_plane_id（address[4]）。
+        对每个 die，从队列中收集满足约束的 transactions 后立即发给 PHY，
+        找到第一个有候选的 die 后返回 True。
+        """
+        if not q:
+            raise ValueError("Issued an empty search transactions queue to PHY")
+
+        die_no = DIE_PER_CHIP
+        plane_no = PLANE_PER_DIE
+
+        start_die = q[0].address[2]
+
+        for _step in range(die_no):
+            die_id = (start_die + _step) % die_no
+            plane_vector = 0
+            sub_plane_id = None
+            dispatch_slots: list = []
+
+            for tr in list(q):
+                if tr.address[2] != die_id:
+                    continue
+                tr_plane = tr.address[3]
+                if plane_vector & (1 << tr_plane):
+                    continue
+                tr_sub_plane = tr.address[4]
+                if sub_plane_id is None:
+                    sub_plane_id = tr_sub_plane
+                elif tr_sub_plane != sub_plane_id:
+                    continue
+                tr.SuspendRequired = False
+                plane_vector |= 1 << tr_plane
+                dispatch_slots.append(tr)
+                if bin(plane_vector).count("1") >= plane_no:
+                    break
+
+            if dispatch_slots:
+                for tr in dispatch_slots:
+                    q.remove(tr)
+                self.PHY.send_command_to_chip(chip_id, dispatch_slots, False)
+
+    def issue_compute_command(self, chip_id, q: list) -> None:
+        """按 die-plane 粒度选取 compute transactions 并下发给 PHY。
+
+        Compute 地址最细粒度为 address[4]（sub_plane/操作单元），address[5] 恒为 0。
+        约束：每个 plane 中选中的操作单元数量不超过 COMPUTE_MAX_PARALLEL_SL * SSL_PER_SL，
+        且同一 die 内不同 plane 选中的 transaction 必须有相同的 sub_plane_id（address[4]）。
+        对每个 die，收集满足约束的 transactions 后立即发给 PHY，
+        找到第一个有候选的 die 后返回 True。
+        """
+        if not q:
+            raise ValueError("Issued an empty compute transactions queue to PHY")
+
+        die_no = DIE_PER_CHIP
+        max_per_plane = COMPUTE_MAX_PARALLEL_SL * SSL_PER_SL
+
+        start_die = q[0].address[2]
+
+        for _step in range(die_no):
+            die_id = (start_die + _step) % die_no
+            plane_count: dict = {}
+            sub_plane_id = None
+            dispatch_slots: list = []
+
+            for tr in list(q):
+                if tr.address[2] != die_id:
+                    continue
+                tr_plane = tr.address[3]
+                tr_sub_plane = tr.address[4]
+                if sub_plane_id is None:
+                    sub_plane_id = tr_sub_plane
+                elif tr_sub_plane != sub_plane_id:
+                    continue
+                count = plane_count.get(tr_plane, 0)
+                if count >= max_per_plane:
+                    continue
+                tr.SuspendRequired = False
+                plane_count[tr_plane] = count + 1
+                dispatch_slots.append(tr)
+
+            if dispatch_slots:
+                for tr in dispatch_slots:
+                    q.remove(tr)
+                self.PHY.send_command_to_chip(chip_id, dispatch_slots, False)
+        return
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
