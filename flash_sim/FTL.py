@@ -3,9 +3,9 @@ from dataclasses import dataclass
 from nt import access
 from typing import Mapping
 
-from common import *
-from PHY import PHY
-import utils
+from .common import *
+from .PHY import PHY
+from . import utils
 
 class CMT:
     def __init__(self):
@@ -52,13 +52,14 @@ class Block_Manager:
                  plane_no_per_die=PLANE_PER_DIE,
                  block_no_per_plane=BLOCK_PER_PLANE,
                  pages_per_block=PAGE_PER_BLOCK):
+        print("Initializing Block Manager...")
         self.channel_no = channel_no
         self.chip_no_per_channel = chip_no_per_channel
         self.die_no_per_chip = die_no_per_chip
         self.plane_no_per_die = plane_no_per_die
         self.block_no_per_plane = block_no_per_plane
         self.pages_per_block = pages_per_block
-
+        print("Initializing block keeping book...")
         # 结构为：channel -> chip -> die -> plane -> [blockBKE, ...]，与 address 前 5 维一致
         self.block_keeping_book = [
             [
@@ -82,6 +83,7 @@ class Block_Manager:
             ]
             for _ in range(channel_no)
         ]
+        print("Block Manager initialization complete.")
 
     def get_block_bke(self, addr):
         # addr: 6 元组 (channel, chip, die, plane, block, page)，使用前 5 维索引
@@ -125,7 +127,9 @@ class Block_Manager:
 
 class GC_WL_Manager:
     def __init__(self):
+        print("Initializing GC/WL Manager...")
         pass
+        print("GC/WL Manager initialization complete.")
 
 
 def _get_lpa_sector_in_mapping_page(lpa: int) -> int:
@@ -140,18 +144,19 @@ class TSU:
     """
 
     def __init__(self):
+        print("Initializing TSU...")
         self._onfly_schedule_req_no = 0
         # Scheduling priority order (highest first)
         self.sched_priority = [
-            "mapping_read",
-            "user_search",
-            "user_compute",
-            "user_read",
-            "mapping_write",
-            "user_write",
-            "gc_read",
-            "gc_write",
-            "gc_erase",
+            TransactionType.MAPPING_READ,
+            TransactionType.USER_SEARCH,
+            TransactionType.USER_COMPUTE,
+            TransactionType.USER_READ,
+            TransactionType.MAPPING_WRITE,
+            TransactionType.USER_WRITE,
+            TransactionType.GC_READ,
+            TransactionType.GC_WRITE,
+            TransactionType.GC_ERASE,
         ]
         # queues[channel][chip][type] = list of Transaction
         self.queues = [
@@ -159,7 +164,7 @@ class TSU:
              for _ in range(CHIP_PER_CHANNEL)]
             for _ in range(CHANNEL_NO)
         ]
-        self.block_manager = Block_Manager()
+        self.block_manager: Block_Manager
         self.channel_no = CHANNEL_NO
         self.chip_no_per_channel = CHIP_PER_CHANNEL
         self.round_robin_turn = [0] * self.channel_no
@@ -167,6 +172,7 @@ class TSU:
         # Register channel/chip idle callbacks so PHY can trigger re-scheduling
         self.PHY.connect_channel_idle_signal(self._on_channel_idle)
         self.PHY.connect_chip_idle_signal(self._on_chip_idle)
+        print("TSU initialization complete.")
 
     # ── Batch submission API ──────────────────────────────────────────────────
 
@@ -176,8 +182,8 @@ class TSU:
 
     def Submit_trans(self, trans):
         """Enqueue a transaction to the appropriate per-chip priority queue."""
-        channel = trans.address[0]
-        chip    = trans.address[1]
+        channel = trans.address.channel
+        chip    = trans.address.chip
         self.queues[channel][chip][trans.type].append(trans)
 
     def Schedule(self):
@@ -559,7 +565,7 @@ class Address_Mapping_Domain:
         self.gmt: dict[int, cmt_entry] = {}
         self.DepartingEntry = []
         self.ArrivingEntry = []
-        self.tsu = TSU()
+        self.tsu : TSU
 
     def query(self, transaction: Transaction) -> bool:
         entry = self.cmt.query(transaction.lpa)
@@ -585,10 +591,12 @@ class Address_Mapping_Domain:
 
 class Address_Mapping_Unit:
     def __init__(self):
+        print("Initializing Address Mapping Unit...")
         self.domains = [Address_Mapping_Domain() for _ in range(NUM_OF_QUEUES)]
         self.waiting_for_mapping_trans: list = []
-        self.tsu = TSU()
+        self.tsu: TSU
         self.gtd: dict[int, GTDEntry] = {}
+        print("Address Mapping Unit initialization complete.")
 
     def translate_and_submit(self, req: Request):
         # SEARCH and COMPUTE requests don't need to be translated
@@ -674,14 +682,22 @@ class Address_Mapping_Unit:
 
 class FTL:
     def __init__(self):
+        print("Initializing FTL...")
         self.address_mapping_unit = Address_Mapping_Unit()
         self.gc_wl_manager = GC_WL_Manager()
         self.block_manager = Block_Manager()
+        self.tsu = TSU()
+        self.tsu.block_manager = self.block_manager
+        self.address_mapping_unit.tsu = self.tsu
+        for domain in self.address_mapping_unit.domains:
+            domain.tsu = self.tsu
+        print("FTL initialization complete.")
+
 
     def handle_new_req(self, req: Request):
         self.address_mapping_unit.translate_and_submit(req)
     
-    def get_static_address(self, sub_plane_id: int) -> tuple:
+    def get_static_address(self, sub_plane_id: int) -> FlashAddress:
         sub_plane_address = sub_plane_id % (SL_PER_BLOCK * SSL_PER_SL * BLOCK_PER_PLANE)
         sub_plane_id //= SL_PER_BLOCK * SSL_PER_SL * BLOCK_PER_PLANE
         plane_address = sub_plane_id % PLANE_PER_DIE
@@ -691,4 +707,12 @@ class FTL:
         chip_address = sub_plane_id % STATIC_CHIP_PER_CHANNEL
         sub_plane_id //= STATIC_CHIP_PER_CHANNEL
         channel_address = sub_plane_id % CHANNEL_NO
-        return (channel_address, chip_address, die_address, plane_address, sub_plane_address, -1)
+        address = FlashAddress(
+            channel=channel_address,
+            chip=chip_address,
+            die=die_address,
+            plane=plane_address,
+            sub_plane=sub_plane_address,  # static address doesn't have block/page
+            page=-1
+        )
+        return address

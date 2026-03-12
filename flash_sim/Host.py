@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 from queue import Queue
 
-from common import *
-import PCIe_link
-from common import CQ_ENTRY_SIZE_BASIC
+from .common import *
+from .pcie_link import PCIe_link, PCIe_message
+from .common import CQ_ENTRY_SIZE_BASIC
 
 class CQ_Entry:
     def __init__(self, source_req, timestamp):
@@ -83,6 +83,7 @@ class Host:
             return None
 
     def __init__(self, name, num_of_queues, depth_of_queues):
+        print("Initializing Host...")
         self.name = name
         self.num_of_queues = num_of_queues
         self.queue_ptrs = self.Queue_ptrs(num_of_queues, depth_of_queues)
@@ -91,10 +92,11 @@ class Host:
             num_of_queues=num_of_queues,
             depth=depth_of_queues,
         )
-        self.pcie_link = None
+        self.pcie_link: Optional[PCIe_link] = None
         self.io_flows = [self.IO_Flow(sq_id=i) for i in range(num_of_queues)]
         self.io_flow_manager = self.IO_Flow_Manager(self.io_flows)
         self.waiting_req = Queue()
+        print("Host initialization complete.")
 
     def execute(self, event):
         if event.type == EventType.REQ_INIT:
@@ -112,7 +114,9 @@ class Host:
             elif message.type in [MessageType.READ_RES_SEND_BACK, MessageType.SEARCH_RES_SEND_BACK, MessageType.COMPUTE_RES_SEND_BACK]:
                 self.memory.write(message.payload["address"], message.payload["data"])
             elif message.type == MessageType.REQ_COMP:
-                self.consume_cq(message.payload["req"])
+                req = message.payload["req"]
+                req.finish_time = CURRENT_TIME()
+                self.consume_cq(req)
             else:
                 raise ValueError(f"Invalid message type: {message.type}")
     
@@ -120,7 +124,6 @@ class Host:
         self.queue_ptrs.sq_heads[sq_id] = (
             self.queue_ptrs.sq_heads[sq_id] + 1
         ) % self.queue_ptrs.depth
-        self.inform_sq_head_update(sq_id)
         self.io_flows[sq_id].busy = False
         self.io_flows[sq_id].current_req = None
         if not self.waiting_req.empty():
@@ -140,7 +143,7 @@ class Host:
         elif next_req.type == RequestType.COMPUTE:
             message_type = MessageType.COMPUTE_REQ
         else: raise ValueError(f"Invalid request type: {next_req.type}")
-        message = PCIe_link.PCIe_message(
+        message = PCIe_message(
             type=message_type, payload={"req": next_req}
         )
         self.pcie_link.send(message, self.pcie_link.device)
@@ -152,6 +155,7 @@ class Host:
             return
         self.memory.sq_push(target_sq_id, req)
         req.sq_id = target_sq_id
+        req.issue_time = CURRENT_TIME()
         flow = self.io_flow_manager.find_available_flow()
         if flow is not None:
             flow.busy = True
@@ -162,7 +166,7 @@ class Host:
                 msg_type = MessageType.SEARCH_REQ
             elif req.type == RequestType.COMPUTE:
                 msg_type = MessageType.COMPUTE_REQ
-            message = PCIe_link.PCIe_message(
+            message = PCIe_message(
                 type=msg_type, payload={"req": req}
             )
             self.pcie_link.send(message, self.pcie_link.device)
@@ -209,7 +213,7 @@ class Host:
     def send_data(self, message):
         req = message.payload["req"]
         data = self.memory.get_req_data(req)
-        new_message = PCIe_link.PCIe_message(
+        new_message = PCIe_message(
             type=MessageType.WRITE_DATA if req.type == RequestType.WRITE else MessageType.SEARCH_DATA if req.type == RequestType.SEARCH else MessageType.COMPUTE_DATA,
             payload={"req": req, "data": data}
         )

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """FTL 用工具：PPA 与地址解析。"""
 
-from common import *
+from .common import *
 
 def translate_ppa_to_address(ppa: int) -> tuple:
     """将 PPA 整数解析为 address 6 元组 (channel, chip, die, plane, block, page)，供 Block_Manager 等使用。

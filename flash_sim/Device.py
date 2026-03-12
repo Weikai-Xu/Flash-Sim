@@ -1,11 +1,10 @@
 # -*- coding: utf-8 -*-
 """SSD 设备顶层模块，包含 HIL。"""
 
-from common import sim_object
-from HIL import HIL
+from .HIL import HIL
 
 
-class Device(sim_object):
+class Device:
     def __init__(self, host):
         self.host = host
         self.hil = HIL(name="HIL", host=host, device=self)
@@ -15,4 +14,4 @@ class Device(sim_object):
         self.hil.execute(event)
 
     def Start_simulation(self):
-        self.hil.Setup_triggers()
+        pass

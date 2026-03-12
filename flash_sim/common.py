@@ -1,12 +1,11 @@
 # -*- coding: utf-8 -*-
 """公共定义：sim_object、事件类型常量、Request、Event。"""
-
+from __future__ import annotations
 from dataclasses import dataclass, field
 import time
 from typing import Any, List, Optional
 from enum import Enum
 from .config import TimingConfig
-from __future__ import annotations
 
 class EventType(Enum):
     # ----- 事件类型常量 -----
@@ -86,7 +85,7 @@ CHANNEL_NO = 8
 CHIP_PER_CHANNEL = 4
 DIE_PER_CHIP = 1
 PLANE_PER_DIE = 4
-BLOCK_PER_PLANE = 2048
+BLOCK_PER_PLANE = 256
 LAYER_PER_BLOCK = 256
 SL_PER_BLOCK = 2
 SSL_PER_SL = 4
@@ -152,6 +151,8 @@ class Request:
     size: int = 0   # size of request
     data_address: Optional[int] = None
     data_size: Optional[int] = None
+    issue_time: Optional[int] = None
+    finish_time: Optional[int] = None
 
     def is_serviced(self) -> bool:
         """是否所有 transaction 已处理完成。"""
@@ -182,6 +183,9 @@ class SimEvent:
     param: Optional[Any] = None
     ignored: bool = False
 
+    def __lt__(self, other: 'SimEvent') -> bool:
+        return self.time < other.time
+
 
 @dataclass
 class cmt_entry:
@@ -191,7 +195,7 @@ class cmt_entry:
 class GTDEntry:
     def __init__(self, address) -> None:
         self.address = address
-        self.valid_bitmap = [0 for _ in LPA_NO_PER_MAPPING_PAGE]
+        self.valid_bitmap = [0 for _ in range(LPA_NO_PER_MAPPING_PAGE)]
 
     def set_valid_bitmap(self, lpa, value):
         self.valid_bitmap[lpa%LPA_NO_PER_MAPPING_PAGE] = value

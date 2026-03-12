@@ -6,7 +6,7 @@ SEARCH/COMPUTE 专属操作由子类或独立路径扩展，此处仅实现 READ
 """
 
 from typing import Dict, List, Tuple, Optional, Callable
-from common import *
+from .common import *
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -98,7 +98,7 @@ class ChipBKE:
 
 # ── PHY class ─────────────────────────────────────────────────────────────────
 
-class PHY(sim_object):
+class PHY():
     """Flash 物理层。
 
     对标 MQSim NVM_PHY_ONFI_NVDDR2，实现：
@@ -108,6 +108,7 @@ class PHY(sim_object):
     """
 
     def __init__(self):
+        print("Initializing PHY...")
         self._channel_busy: List[bool] = [False] * CHANNEL_NO
         self._chip_bkes: Dict[Tuple[int, int], ChipBKE] = {}
 
@@ -115,6 +116,7 @@ class PHY(sim_object):
         self._channel_idle_cbs: List[Callable[[int], None]] = []
         self._chip_idle_cbs: List[Callable[[Tuple[int, int]], None]] = []
         self._transaction_serviced_cbs: List[Callable] = []
+        print("PHY initialization complete.")
 
     # ── Accessors ─────────────────────────────────────────────────────────────
 

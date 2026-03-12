@@ -2,17 +2,18 @@
 from queue import Queue
 from typing import Mapping
 
-from common import *
-from FTL import FTL, Transaction
-import PCIe_link
-import utils
+from .common import *
+from .FTL import FTL, Transaction
+from . import pcie_link as PCIe_link
+from . import utils
 from math import ceil
-from PCIe_link import PCIe_message
-from Host import CQ_Entry
+from .pcie_link import PCIe_message
+from .Host import CQ_Entry
 
 
 class HIL:
     def __init__(self, name, host, device):
+        print("Initializing HIL...")
         self.name = name
         self.host = host
         self.device = device
@@ -21,13 +22,10 @@ class HIL:
         self.input_streams = [Queue() for _ in range(num_queues)]
         self.cache_manager = Cache_Manager()
         self.ftl = FTL()
-        self._sq_head_tail = {(0, 0) for _ in range(num_queues)}
-        self._cq_head_tail = {(0, 0) for _ in range(num_queues)}
+        self._sq_head_tail = [(0, 0) for _ in range(num_queues)]
+        self._cq_head_tail = [(0, 0) for _ in range(num_queues)]
         self.pcie_link = self.host.pcie_link
-
-    def Start_simulation(self):
-        self.ftl.Start_simulation()
-        self.cache_manager.Start_simulation()
+        print("HIL initialization complete.")
 
     def execute(self, event):
         assert event.type == EventType.DELIVER
@@ -46,7 +44,8 @@ class HIL:
             for i in range(size):
                 sub_plane_id = start_sub_plane_id + i
                 address = self.ftl.get_static_address(sub_plane_id)
-                tr = Transaction(source_req=req, type=req.type, address=address)
+                tr_type = TransactionType.USER_SEARCH if req.type == RequestType.SEARCH else TransactionType.USER_COMPUTE
+                tr = Transaction(source_req=req, type=tr_type, address=address)
                 req.transaction_list.append(tr)
             return
 
@@ -61,7 +60,14 @@ class HIL:
             lpa_count = max(1, ceil((lha_count + head_margin_sectors) / SECTOR_PER_PAGE))
             if lpa_count == 1: # only access one page
                 bitmap = [0] * head_margin_sectors + [1] * lha_count + [0] * tail_margin_sectors
-                tr = Transaction(source_req=req, lpa=start_lpa, bitmap=bitmap)
+                tr_type = None
+                if req.type == RequestType.READ:
+                    tr_type = TransactionType.USER_READ
+                elif req.type == RequestType.WRITE:
+                    tr_type = TransactionType.USER_WRITE
+                else:
+                    raise ValueError(f"Invalid request type: {req.type}")
+                tr = Transaction(source_req=req, lpa=start_lpa, bitmap=bitmap, type=tr_type)
                 req.transaction_list.append(tr)
                 return
             # access multiple pages
@@ -73,10 +79,17 @@ class HIL:
                     bitmap = [1] * (lha_count + head_margin_sectors - tail_margin_sectors) + [0] * tail_margin_sectors
                 else:
                     bitmap = [1] * SECTOR_PER_PAGE
-                tr = Transaction(source_req=req, lpa=lpa, bitmap=bitmap)
+                tr_type = None
+                if req.type == RequestType.READ:
+                    tr_type = TransactionType.USER_READ
+                elif req.type == RequestType.WRITE:
+                    tr_type = TransactionType.USER_WRITE
+                else:
+                    raise ValueError(f"Invalid request type: {req.type}")
+                tr = Transaction(source_req=req, lpa=lpa, bitmap=bitmap, type=tr_type)
                 req.transaction_list.append(tr)
-
-        raise ValueError("Unexpected req type!")
+        else:
+            raise ValueError("Unexpected req type!")
 
         
     def _on_transaction_serviced(self, tr): # handle trnasaction serviced signal from PHY
@@ -150,9 +163,6 @@ class Cache_Manager:
     def __init__(self):
         self.cache = Cache()
         self._lru_list: list[int] = []
-
-    def Start_simulation(self):
-        self.cache.Start_simulation()
 
     def service(self, req):
         if req.type == RequestType.READ:

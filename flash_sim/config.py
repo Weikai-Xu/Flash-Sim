@@ -84,7 +84,7 @@ class BlockInfo:
     """Information about a block."""
     status: str = BlockStatus.FREE
     pe_count: int = 0  # Program-Erase cycle count
-    pages: Dict[int, PageInfo] = dict()  # page_index -> PageInfo
+    pages: Dict[int, PageInfo] = field(default_factory=dict)  # page_index -> PageInfo
 
     def __post_init__(self):
         if self.pages is None:
@@ -96,22 +96,36 @@ class FlashGeometry:
     """Flash storage geometry configuration for 3D NAND.
 
     Hierarchical structure:
-    - Die: Independent flash chip
-      - Plane: Share command queue
-        - Block: Erase unit
-          - Layer: NAND layer within block
-            - Sub-Block: One page per layer (1 page/sub-block/layer)
+    - Channel: Independent channel
+      - Chip: Flash chip per channel
+        - Die: Independent flash die per chip
+          - Plane: Share command queue
+            - Block: Erase unit
+              - Layer: NAND layer within block
+                - Sub-Block (SL/SSL): One page per layer (1 page/sub-block/layer)
 
-    Relationship: pages_per_block = layers_per_block * sub_blocks_per_block
+    Relationship: pages_per_block = layers_per_block * sl_per_block * ssl_per_sl
+    (equivalently: sub_blocks_per_block = sl_per_block * ssl_per_sl)
     Each sub-block contains exactly 1 page per layer.
 
-    Default values for 128-layer 3D NAND.
+    Default values match common.py hardware config (256-layer 3D NAND).
     """
-    layers_per_block: int = 128         # Number of layers
-    sub_blocks_per_block: int = 8       # Sub-blocks per layer (each has 1 page)
-    blocks_per_plane: int = 1024
-    planes_per_die: int = 2
-    dies: int = 1
+    # ----- 通道与芯片 -----
+    channel_no: int = 8
+    chip_per_channel: int = 4
+    dies: int = 4                      # die_per_chip
+    planes_per_die: int = 4
+    blocks_per_plane: int = 2048
+    # ----- Block 内层次 -----
+    layers_per_block: int = 256        # Number of layers (WL)
+    sl_per_block: int = 2              # Sub-block level per block
+    ssl_per_sl: int = 4                # Sub-sub-block per SL
+    sub_blocks_per_block: int = 8      # = sl_per_block * ssl_per_sl
+    sector_per_page: int = 64
+    # ----- 计算/搜索并行与 Bank -----
+    compute_max_parallel_sl: int = 256
+    search_max_parallel_wl: int = 256
+    static_chip_per_channel: int = 1
 
     def __post_init__(self):
         if self.layers_per_block <= 0:
@@ -124,6 +138,12 @@ class FlashGeometry:
             raise ValueError("planes_per_die must be positive")
         if self.dies <= 0:
             raise ValueError("dies must be positive")
+        if self.channel_no <= 0:
+            raise ValueError("channel_no must be positive")
+        if self.chip_per_channel <= 0:
+            raise ValueError("chip_per_channel must be positive")
+        if self.sector_per_page <= 0:
+            raise ValueError("sector_per_page must be positive")
 
     @property
     def pages_per_block(self) -> int:
@@ -197,6 +217,41 @@ class FlashGeometry:
     def total_blocks(self) -> int:
         """Total blocks in the flash storage."""
         return self.blocks_per_die * self.dies
+
+    # ----- 与 common.py 对应的派生量（计算/搜索 Bank、随机扇区总数） -----
+    @property
+    def page_no_per_search_bank(self) -> int:
+        """Search bank 内并行页数（= search_max_parallel_wl）。"""
+        return self.search_max_parallel_wl
+
+    @property
+    def page_no_per_compute_bank(self) -> int:
+        """Compute bank 内并行页数（= compute_max_parallel_sl * ssl_per_sl）。"""
+        return self.compute_max_parallel_sl * self.ssl_per_sl
+
+    @property
+    def compute_bank_per_plane(self) -> int:
+        """每 Plane 的 Compute Bank 数量。"""
+        return self.blocks_per_plane * self.sl_per_block // self.compute_max_parallel_sl
+
+    @property
+    def search_bank_per_plane(self) -> int:
+        """每 Plane 的 Search Bank 数量。"""
+        return self.ssl_per_sl * self.sl_per_block * self.blocks_per_plane
+
+    @property
+    def tot_random_sector_no(self) -> int:
+        """可用于随机访问的扇区总数（不含 static chip 部分）。"""
+        return (
+            self.sector_per_page * self.pages_per_block * self.blocks_per_plane
+            * self.planes_per_die * self.dies * self.channel_no
+            * (self.chip_per_channel - self.static_chip_per_channel)
+        )
+    
+    @property
+    def static_area_base_address(self) -> int:
+        """static area 的起始地址。"""
+        return self.tot_random_sector_no//self.sector_per_page
 
     def page_to_address(self, page: int, technology: FlashTechnology = FlashTechnology.SLC) -> FlashAddress:
         """Convert a linear page number to physical flash address.

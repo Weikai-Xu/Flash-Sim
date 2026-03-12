@@ -19,24 +19,20 @@ class ValidationError(Exception):
 # Each command operates on LBA which maps to physical addresses via FTL
 COMMAND_SCHEMA = {
     "read": {
-        "required": [],
-        "optional": ["lba", "address"],  # address for backward compat
+        "required": ["time", "start_lha", "size"],
+        "optional": [],  # address for backward compat
     },
     "write": {
-        "required": [],
-        "optional": ["lba", "address", "data"],  # address for backward compat
-    },
-    "erase": {
-        "required": [],
-        "optional": ["lba", "address"],  # LBA maps to block for erase
+        "required": ["time", "start_lha", "size"],
+        "optional": ["data_address", "data_size", "invalidate", "bitmap"],  # user_erase oper is realized by invalidate, which will invalidate related page while write nothing
     },
     "search": {
-        "required": ["lba"],  # LBA determines the target block
-        "optional": ["wl_count", "pattern"],
+        "required": ["time", "start_lha", "size"], # lha and size are in granularity of sub-plane
+        "optional": ["bitmap", "wl_bitmap", "pattern"],
     },
     "compute": {
-        "required": ["lba"],  # LBA determines the starting block
-        "optional": ["block_count", "layer", "weights"],
+        "required": ["time", "start_lha", "size"], # lha and size are in granularity of sub-plane
+        "optional": ["bitmap", "wl_bitmap", "input"],
     },
 }
 
