@@ -20,12 +20,13 @@ else:
     from . import pcie_link
     from . import Device
     from . import common as _common
-    from .common import EventType, SimEvent, Request, RequestType
+    from .common import EventType, SimEvent, Request, RequestType, format_event_queue
     from .parser import parse_trace
 
 class Engine:
     def __init__(self):
         print("Initializing simulation engine...")
+        self._construction_valid: bool = False
         self.current_time = 0
         self.event_queue = PriorityQueue()
 
@@ -70,12 +71,31 @@ class Engine:
                 serviced_trans=0,
                 lha_start=cmd["start_lha"],
                 size=cmd["size"],
+                data_address=cmd.get("data_address"),
+                data_size=cmd.get("data_size"),
             )
-            self.Register_event(EventType.REQ_INIT, self.host, req, scheduled_time)
+            self.Register_event(EventType.REQ_INIT, self.host, {"req": req}, scheduled_time)
+    
+    def Validate_construction(self):
+        if self._construction_valid:
+            return
+        assert self.event_queue is not None, "Engine event_queue is not set"
+        assert self.host is not None, "Engine host is not set"
+        assert self.device is not None, "Engine device is not set"
+        assert self.pcie_link is not None, "Engine pcie_link is not set"
+        self.host.Validate_construction()
+        self.device.Validate_construction()
+        self.pcie_link.Validate_construction()
+        self._construction_valid = True
+        print("Construction validation complete.") 
 
-    def Start_simulation(self):
-        self.Initialize_event_queue("../examples/test_trace.json")
-        print("Initialization complete.")
-        print(f"event_queue 初始化后内容: {list(self.event_queue.queue)}")
+    def Start_simulation(self, trace_path):
+        self.Validate_construction()
+        self.Initialize_event_queue(trace_path)
+        print("Event queue initialization complete.\n\n")
+        print(format_event_queue(self.event_queue.queue))
+        print("--------------------------------------------------------\n")
+        print("Starting simulation...\n")
+        print("--------------------------------------------------------\n")
         self.Run()
 
