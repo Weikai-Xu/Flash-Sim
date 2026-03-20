@@ -7,24 +7,6 @@ import json
 from collections import defaultdict
 
 from .common import *
-# #region agent log
-def _dbg_log(data: dict):
-    import time
-    import os
-    bases = [
-        Path(__file__).resolve().parent.parent,  # 项目根
-        Path(__file__).resolve().parent,         # flash_sim/
-        Path(os.getcwd()),                       # 当前工作目录兜底
-    ]
-    for base in bases:
-        try:
-            p = base / "debug-6da53a.log"
-            with open(p, "a", encoding="utf-8") as f:
-                f.write(json.dumps({**data, "ts": time.time()}, ensure_ascii=False) + "\n")
-            return
-        except Exception:
-            continue
-# #endregion
 from .PHY import PHY
 from . import utils
 from collections import deque as deque
@@ -362,28 +344,33 @@ class TSU:
         # #endregion
         if is_static:
             # SEARCH/COMPUTE-dedicated chip: handled separately
+            print(f"[TSU] <try_activate> SEARCH/COMPUTE-dedicated chip {chip_id}")
             if self.try_compute(chip_id):
-                print(f"[TSU] <try_activate> compute dispatched for chip {chip_id}")
+                debug_info(f"[TSU] <try_activate> compute dispatched for chip {chip_id}")
                 dispatched = True
+            else:
+                debug_info(f"[TSU] <try_activate> compute failed for chip {chip_id}")
             if not dispatched and self.try_search(chip_id):
-                print(f"[TSU] <try_activate> search dispatched for chip {chip_id}")
+                debug_info(f"[TSU] <try_activate> search dispatched for chip {chip_id}")
                 dispatched = True
+            else:
+                debug_info(f"[TSU] <try_activate> search failed for chip {chip_id}")
             return dispatched
         if not dispatched and self.try_read(chip_id):
-            print(f"[TSU] <try_activate> read dispatched for chip {chip_id}")
+            debug_info(f"[TSU] <try_activate> read dispatched for chip {chip_id}")
             dispatched = True
         else:
-            print(f"[TSU] <try_activate> read failed for chip {chip_id}")
+            debug_info(f"[TSU] <try_activate> read failed for chip {chip_id}")
         if not dispatched and self.try_write(chip_id):
-            print(f"[TSU] <try_activate> write dispatched for chip {chip_id}")
+            debug_info(f"[TSU] <try_activate> write dispatched for chip {chip_id}")
             dispatched = True
         else:
-            print(f"[TSU] <try_activate> write failed for chip {chip_id}")
+            debug_info(f"[TSU] <try_activate> write failed for chip {chip_id}")
         if not dispatched and self.try_erase(chip_id):
-            print(f"[TSU] <try_activate> erase dispatched for chip {chip_id}")
+            debug_info(f"[TSU] <try_activate> erase dispatched for chip {chip_id}")
             dispatched = True
         else:
-            print(f"[TSU] <try_activate> erase failed for chip {chip_id}")
+            debug_info(f"[TSU] <try_activate> erase failed for chip {chip_id}")
         return dispatched
 
     # ── Per-type scheduling methods ───────────────────────────────────────────
@@ -500,7 +487,7 @@ class TSU:
         if chip_bke.status != ChipStatus.IDLE:
             return False
 
-        q = self.queues[chip_id[0]][chip_id[1]].get("user_compute")
+        q = self.queues[chip_id[0]][chip_id[1]].get(TransactionType.USER_COMPUTE)
         if not q:
             return False
         self.issue_compute_command(chip_id, q)
@@ -516,7 +503,7 @@ class TSU:
         if chip_bke.status != ChipStatus.IDLE:
             return False
 
-        q = self.queues[chip_id[0]][chip_id[1]].get("user_search")
+        q = self.queues[chip_id[0]][chip_id[1]].get(TransactionType.USER_SEARCH)
         if not q:
             return False
         self.issue_search_command(chip_id, q)
@@ -561,7 +548,7 @@ class TSU:
                 if tr.rely_on_transactions:
                     print(f"[TSU] <issue_command> tr has rely_on_transactions, skipping {repr(tr)}")
                     continue
-                if not tr.data_ready and (tr.type.value.lower() != "read"):
+                if not tr.data_ready and ("read" not in tr.type.value.lower()):
                     print(f"[TSU] <issue_command> data not ready, skipping {repr(tr)}")
                     continue
                 if tr.address.die != die_id:
@@ -585,7 +572,7 @@ class TSU:
                     if tr.rely_on_transactions:
                         print(f"[TSU] <issue_command> tr has rely_on_transactions, skipping {repr(tr)}")
                         continue
-                    if not tr.data_ready and (tr.type.value.lower() != "read"):
+                    if not tr.data_ready and ("read" not in tr.type.value.lower()):
                         print(f"[TSU] <issue_command> data not ready, skipping {repr(tr)}")
                         continue
                     if tr.address.die != die_id:
@@ -630,7 +617,6 @@ class TSU:
         plane_no = PLANE_PER_DIE
 
         start_die = q[0].address.die
-        start_sub_plane = q[0].address.sub_plane
 
         for _step in range(die_no):
             die_id = (start_die + _step) % die_no
@@ -638,11 +624,19 @@ class TSU:
             dispatch_slots: list = []
 
             for tr in list(q):
+                if tr.rely_on_transactions:
+                    debug_info(f"[TSU] <issue_search_command> tr has rely_on_transactions, skipping {repr(tr)}")
+                    continue
+                if not tr.data_ready:
+                    debug_info(f"[TSU] <issue_search_command> data not ready, skipping {repr(tr)}")
+                    continue
                 if tr.address.die != die_id:
                     continue
                 tr_plane = tr.address.plane
                 if plane_vector & (1 << tr_plane):
+                    debug_info(f"[TSU] <issue_search_command> tr plane already selected, skipping {repr(tr)}")
                     continue
+                # surppose 
                 tr.SuspendRequired = False
                 plane_vector |= 1 << tr_plane
                 dispatch_slots.append(tr)
@@ -874,6 +868,15 @@ class Address_Mapping_Unit:
                             self.block_manager._set_barrier(tr)
                             self.block_manager._set_barrier(read_tr)
                             self.tsu.Submit_trans(read_tr)
+        # process search and compute requests, whose transaction ppa is decided in segment step
+        elif req.type == RequestType.SEARCH:
+            assert req.transaction_list is not None, "Search request transaction list is not set"
+            for tr in req.transaction_list:
+                self.tsu.Submit_trans(tr)
+        elif req.type == RequestType.COMPUTE:
+            assert req.transaction_list is not None, "Compute request transaction list is not set"
+            for tr in req.transaction_list:
+                self.tsu.Submit_trans(tr)
         else:
             raise ValueError("Invalid request type for translate_and_submit")
         print("[AMU] <translate_and_submit> Prepare trans submission complete")

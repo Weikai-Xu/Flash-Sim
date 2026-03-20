@@ -336,6 +336,10 @@ class PHY():
 
         elif ev_type == EventType.PHY_CHIP_ERASE_COMPLETE:
             self._handle_array_execution_finished(chip_id, die_id, "erase", transactions)
+        elif ev_type == EventType.PHY_CHIP_SEARCH_COMPLETE:
+            self._handle_array_execution_finished(chip_id, die_id, "search", transactions)
+        elif ev_type == EventType.PHY_CHIP_COMPUTE_COMPLETE:
+            self._handle_array_execution_finished(chip_id, die_id, "compute", transactions)
 
         # ── Read data-out phase complete ──────────────────────────────────────
 
@@ -366,11 +370,6 @@ class PHY():
                 self._broadcast_channel_idle(channel_id)
         
         elif ev_type == EventType.PHY_SEARCH_DATA_TRANSFERRED:
-            for tr in transactions:
-                tr.completed = True
-                for required_by_tr in tr.required_by_transactions:
-                    required_by_tr.rely_on_transactions.remove(tr)
-                self._broadcast_transaction_serviced(tr)
             chip_bke = self.get_chip_bke(chip_id)
             die_bke = chip_bke.get_die_bke(die_id)
             channel_id = chip_id[0]
@@ -378,6 +377,11 @@ class PHY():
             die_bke.active_command = None
             chip_bke.No_of_active_dies -= 1
             self._channel_busy[channel_id] = False
+            for tr in transactions:
+                tr.completed = True
+                for required_by_tr in tr.required_by_transactions:
+                    required_by_tr.rely_on_transactions.remove(tr)
+                self._broadcast_transaction_serviced(tr)
             if chip_bke.HasSuspendedCommands:
                 self._send_resume_command(chip_id)
             else:
@@ -386,11 +390,6 @@ class PHY():
                 self._broadcast_channel_idle(channel_id)
         
         elif ev_type == EventType.PHY_COMPUTE_DATA_TRANSFERRED:
-            for tr in transactions:
-                tr.completed = True
-                for required_by_tr in tr.required_by_transactions:
-                    required_by_tr.rely_on_transactions.remove(tr)
-                self._broadcast_transaction_serviced(tr)
             chip_bke = self.get_chip_bke(chip_id)
             die_bke = chip_bke.get_die_bke(die_id)
             channel_id = chip_id[0]
@@ -398,6 +397,11 @@ class PHY():
             die_bke.active_command = None
             chip_bke.No_of_active_dies -= 1
             self._channel_busy[channel_id] = False
+            for tr in transactions:
+                tr.completed = True
+                for required_by_tr in tr.required_by_transactions:
+                    required_by_tr.rely_on_transactions.remove(tr)
+                self._broadcast_transaction_serviced(tr)
             if chip_bke.HasSuspendedCommands:
                 self._send_resume_command(chip_id)
             else:

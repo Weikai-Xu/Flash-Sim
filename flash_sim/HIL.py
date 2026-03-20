@@ -57,7 +57,7 @@ class HIL:
         if req.type in (RequestType.SEARCH, RequestType.COMPUTE):
             size = req.size
             for i in range(size):
-                sub_plane_id = start_lha + i
+                sub_plane_id = req.lha_start + i
                 address = self.ftl.get_static_address(sub_plane_id)
                 lpa  = utils.translate_lha_to_lpa(sub_plane_id)
                 tr_type = TransactionType.USER_SEARCH if req.type == RequestType.SEARCH else TransactionType.USER_COMPUTE
@@ -121,7 +121,8 @@ class HIL:
             self.host.queue_ptrs.cq_tails[source_req.sq_id] += 1
             message = PCIe_link.PCIe_message(type=MessageType.REQ_COMP, payload=payload)
             self.pcie_link.send(message, self.host)
-        debug_info(f"[HIL] _on_transaction_serviced: source_req is not serviced yet")
+        else:
+            debug_info(f"[HIL] _on_transaction_serviced: source_req is not serviced yet")
 
 
 
@@ -158,8 +159,10 @@ class HIL:
             raise ValueError(f"Unexpected message type for HIL: {message.type}")
 
     def broadcast_data_ready_signal(self, req):
+        self.ftl.tsu.Prepare_trans_submission()
         for tr in req.transaction_list:
             tr.data_ready = True
+        self.ftl.tsu.Schedule()
 
 class Cache:
     def __init__(self, max_entries: int = 1024):

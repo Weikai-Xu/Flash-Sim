@@ -5,7 +5,7 @@ from dataclasses import dataclass, field, fields
 import time
 from typing import Any, List, Optional
 from enum import Enum
-from .config import TimingConfig, FlashGeometry
+from config import TimingConfig, FlashGeometry
 
 class EventType(Enum):
     # ----- 事件类型常量 -----
@@ -101,7 +101,7 @@ SEARCH_BANK_PER_PLANE = SSL_PER_SL * SL_PER_BLOCK * BLOCK_PER_PLANE
 
 STATIC_CHIP_PER_CHANNEL = 1
 STATIC_BASE_LHA = SECTOR_PER_PAGE * PAGE_PER_BLOCK * BLOCK_PER_PLANE * PLANE_PER_DIE \
-    * DIE_PER_CHIP * CHANNEL_NO * (CHIP_PER_CHANNEL - STATIC_CHIP_PER_CHANNEL)
+    * DIE_PER_CHIP * CHANNEL_NO * (CHIP_PER_CHANNEL - STATIC_CHIP_PER_CHANNEL) # 1610612736
 
 
 # ----- 常量 -----
@@ -373,3 +373,5 @@ def Register_event(event_type: str, target: Any, param: Any, scheduled_time: int
         raise ValueError("Event scheduler is not initialized")
 
 
+if __name__ == "__main__":
+    print(STATIC_BASE_LHA)
