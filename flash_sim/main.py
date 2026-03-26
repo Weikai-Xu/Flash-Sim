@@ -11,8 +11,8 @@ from pathlib import Path
 #   单文件句柄 + 互斥写入；每次 write 即 flush，顺序与「python -u … 2>&1 | tee file」一致。
 # ---------------------------------------------------------------------------
 _BASE = Path(__file__).resolve().parent
-INPUT_JSON = str(_BASE.parent / "examples" / "test.json")
-MERGED_LOG = str(_BASE / "output" / "test.log")
+INPUT_JSON = str(_BASE.parent / "examples" / "test_read_write.json")
+MERGED_LOG = str(_BASE / "output" / "test_read_write.log")
 MERGED_LOG_MIRROR_CONSOLE = True
 
 
@@ -128,9 +128,9 @@ if __name__ == "__main__":
             print("Simulation completed.")
             print(f"Simulation time: {sim_engine.Get_current_time()}")
             print(format_event_queue(sim_engine.event_queue.queue))
-            # print_tsu_chip_queues(sim_engine)
-            # print("\n\naddress_mapping_unit.gtd:")
-            # print(sim_engine.device.ftl.address_mapping_unit.gtd)
+            print(sim_engine.device.ftl.address_mapping_unit.cmt.cache)
+            print(sim_engine.device.ftl.address_mapping_unit.gmt)
+            print(sim_engine.device.ftl.address_mapping_unit.gtd)
     finally:
         if _merged_backing is not None:
             try:

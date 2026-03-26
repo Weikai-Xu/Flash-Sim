@@ -76,6 +76,7 @@ class TransactionType(Enum):
     MAPPING_WRITE = "MAPPING_WRITE"
     USER_READ = "USER_READ"
     USER_WRITE = "USER_WRITE"
+    USER_READ_FOR_WRITE = "USER_READ_FOR_WRITE"
     USER_SEARCH = "USER_SEARCH"
     USER_COMPUTE = "USER_COMPUTE"
     USER_STATIC_WRITE = "USER_STATIC_WRITE"
@@ -88,7 +89,7 @@ CQ_ENTRY_SIZE_BASIC = 128
 SQ_ENTRY_SIZE = 128
 
 # FTL CMT config
-CMT_TYPE = "seperated"
+CMT_TYPE = "shared"
 
 # 硬件配置
 geometry = FlashGeometry()
@@ -115,7 +116,8 @@ STATIC_BASE_LHA = SECTOR_PER_PAGE * PAGE_PER_BLOCK * BLOCK_PER_PLANE * PLANE_PER
 
 
 # ----- 常量 -----
-CMT_SIZE = 4096
+CMT_SIZE = 32
+GMT_SIZE = 32
 LPA_NO_PER_SECTOR = 4
 LPA_NO_PER_MAPPING_PAGE = LPA_NO_PER_SECTOR * SECTOR_PER_PAGE
 NUM_OF_QUEUES = 8
@@ -158,9 +160,10 @@ class ChipStatus(Enum):
 
 @dataclass
 class Transaction:
-    source_req: Request
+    source_req: Optional[Request]
     type: TransactionType
-    lpa: int # register mvpn if type is TransactionType.MAPPING_...
+    lpa: int = -1 # register lpa if type is not TransactionType.MAPPING_...
+    mvpn: int = -1 # register mvpn if type is TransactionType.MAPPING_...
     address: FlashAddress = field(default_factory=lambda: FlashAddress(channel=-1, chip=-1, die=-1, plane=-1, sub_plane=-1, page=-1))
     bitmap: list[int] = field(default_factory=list) # register lpa bitmap if type is TransactionType.MAPPING_..., else sector bitmap
     rely_on_transactions: list['Transaction'] = field(default_factory=list)
@@ -170,6 +173,24 @@ class Transaction:
     data_ready: bool = True
     payload: list[int] = field(default_factory=list) # register data if type is TransactionType.USER_..., else payload for mapping write
     response: Optional[list[int]] = None # register response data when necessary
+
+    def get_response_from_transaction(self, tr: 'Transaction'):
+        if self.type == TransactionType.MAPPING_WRITE and tr.type == TransactionType.MAPPING_READ:
+            for i in range(LPA_NO_PER_MAPPING_PAGE):
+                self.bitmap[i] = self.bitmap[i] or tr.bitmap[i]
+                self.payload[i] = tr.payload[i] if self.payload[i] is None else self.payload[i]
+        elif self.type in [TransactionType.USER_READ, TransactionType.USER_WRITE] and tr.type == TransactionType.MAPPING_READ:
+            idx = self.lpa % LPA_NO_PER_MAPPING_PAGE
+            if tr.bitmap[idx] == 1 and tr.response[idx] is not None:
+                self.address = self.translate_ppa_to_address(tr.response[idx])
+            else:
+                raise ValueError(f"[Transaction] <get_response_from_transaction> accessing invalid lpa in mapping page!")
+        elif self.type == TransactionType.USER_WRITE and tr.type == TransactionType.USER_READ_FOR_WRITE:
+            for i in range(SECTOR_PER_PAGE):
+                self.bitmap[i] = self.bitmap[i] or tr.bitmap[i]
+                self.payload[i] = tr.payload[i] if self.payload[i] is None else self.payload[i]
+        
+        return
 
 
     def __str__(self) -> str:
@@ -343,7 +364,7 @@ def format_event_queue(event_list) -> str:
 
 @dataclass
 class cmt_entry:
-    ppa: FlashAddress
+    address: FlashAddress
     dirty: bool
 
 class GTDEntry:

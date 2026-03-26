@@ -55,7 +55,7 @@ Event:
 
 
 functions to add:
-1. partial page update by write, need to generate a related read transaction
+1. partial page update by write, need to generate a related read transaction and merge bitmap of update requests within the same page
 2. gc unit
 3. check multi-queue arrangement
 4. add static write support and read support for static region

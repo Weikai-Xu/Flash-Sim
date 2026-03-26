@@ -93,11 +93,18 @@ class ChipBKE:
     def get_die_bke(self, die_id: int) -> DieBKE:
         return self.dies[die_id]
 
+class PageType(Enum):
+    MAPPING = "MAPPING"
+    USER = "USER"
+
+@dataclass
 class PageData:
-    def __init__(self):
-        self.function = None
-        self.data = None
-        self.lpa = None
+    valid_bitmap: list[int] = field(default_factory=list)
+    data: list[int] = field(default_factory=list)
+    lpa: Optional[int] = None
+    mvpn: Optional[int] = None
+    function: Optional[PageType] = None
+    
 
 # ── PHY class ─────────────────────────────────────────────────────────────────
 
@@ -341,11 +348,11 @@ class PHY():
             # Data DMA'd from chip to controller; complete all waiting read transactions.
             for tr in transactions:
                 tr.completed = True
-                data = self._read_from_storage(tr.type, tr.address, tr.bitmap)
-                tr.response = data
+                tr.response = self._read_from_storage(tr)
                 debug_info(f"[PHY] PHY_READ_DATA_TRANSFERRED, tr: {tr}")
                 for required_by_tr in tr.required_by_transactions:
                     required_by_tr.rely_on_transactions.remove(tr)
+                    required_by_tr.get_response_from_transaction(tr)
                     debug_info(f"[PHY] PHY_READ_DATA_TRANSFERRED, required_by_tr: {required_by_tr}")
                 self._broadcast_transaction_serviced(tr)
             if chip_bke.HasSuspendedCommands:
@@ -429,7 +436,7 @@ class PHY():
                 for tr in transactions:
                     tr.completed = True
                     if tr.type == TransactionType.MAPPING_WRITE:
-                        self._write_to_storage(tr.type, tr.address, tr.payload, tr.lpa)
+                        self._write_to_storage(tr)
                     debug_info(f"[PHY] following tr completed: {tr}")
                     for required_by_tr in tr.required_by_transactions:
                         required_by_tr.rely_on_transactions.remove(tr) # remove reliance
@@ -501,39 +508,51 @@ class PHY():
         chip_bke.HasSuspendedCommands = False
     
     # ---------------- PHY storage transaction ----------------------
-    def _write_to_storage(self, type: TransactionType, address: FlashAddress, data: list[int], lpa: int) -> None:
-        channel_id = address.channel
-        chip_id = address.chip
-        die_id = address.die
-        plane_id = address.plane
-        sub_plane_id = address.sub_plane
-        page_id = address.page
-        pagedata = self._storage[channel_id][chip_id][die_id][plane_id][sub_plane_id][page_id]
-        pagedata.data = data
-        pagedata.lpa = lpa
-        if type == TransactionType.MAPPING_WRITE:
-            pagedata.function = "mapping"
+    def _write_to_storage(self, tr: Transaction) -> None:
+        if tr.type == TransactionType.MAPPING_WRITE:
+            page_type = PageType.MAPPING
+        elif tr.type == TransactionType.USER_WRITE:
+            page_type = PageType.USER
         else:
-            pagedata.function = "user"
-    
-    def _read_from_storage(self, type: TransactionType, address: FlashAddress, bitmap: list[int]) -> list[int]:
-        if type != TransactionType.MAPPING_READ:
-            return []
-        channel_id = address.channel
-        chip_id = address.chip
-        die_id = address.die
-        plane_id = address.plane
-        sub_plane_id = address.sub_plane
-        page_id = address.page
+            raise ValueError(f"Invalid transaction type for writing to storage: {tr.type}")
+        channel_id = tr.address.channel
+        chip_id = tr.address.chip
+        die_id = tr.address.die
+        plane_id = tr.address.plane
+        sub_plane_id = tr.address.sub_plane
+        page_id = tr.address.page
         pagedata = self._storage[channel_id][chip_id][die_id][plane_id][sub_plane_id][page_id]
-        if len(pagedata.data) != len(bitmap):
-            raise ValueError(f"Data length mismatch, data: {len(pagedata.data)}, bitmap: {len(bitmap)}")
-        data = []
-        for i in range(len(bitmap)):
-            if bitmap[i] == 0:
-                continue
-            data.append(pagedata.data[i])
-        return data
+        pagedata.function = page_type
+        pagedata.data = tr.payload
+        pagedata.lpa = tr.lpa if tr.lpa != -1 else None
+        pagedata.mvpn = tr.mvpn if tr.mvpn != -1 else None
+        pagedata.valid_bitmap = tr.bitmap
+        return
+
+    
+    def _read_from_storage(self, tr: Transaction) -> PageData:
+        pagedata = self._storage[tr.address.channel][tr.address.chip][tr.address.die][tr.address.plane][tr.address.sub_plane][tr.address.page]
+        if pagedata.function == PageType.MAPPING:
+            if pagedata.mvpn is None:
+                raise ValueError(f"[PHY] <_read_from_storage> accessing invalid mapping page!")
+            valid = True
+            for i in range(LPA_NO_PER_MAPPING_PAGE):
+                if tr.bitmap[i] == 1 and pagedata.valid_bitmap[i] == 0:
+                    valid = False
+                    break
+            if not valid:
+                raise ValueError(f"[PHY] <_read_from_storage> accessing invalid lpa in mapping page!")
+        elif pagedata.function == PageType.USER:
+            if pagedata.lpa is None:
+                raise ValueError(f"[PHY] <_read_from_storage> accessing invalid user page!")
+            valid = True
+            for i in range(SECTOR_PER_PAGE):
+                if tr.bitmap[i] == 1 and pagedata.data[i] is None:
+                    valid = False
+                    break
+            if not valid:
+                raise ValueError(f"[PHY] <_read_from_storage> accessing invalid sector in user page!")
+        return pagedata
 
 
 # ── Module-level utility ──────────────────────────────────────────────────────

@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 from dataclasses import dataclass
+from doctest import debug
 from nt import access
 from typing import Mapping
 from pathlib import Path
@@ -16,25 +17,32 @@ class CMT:
         self.cache: dict[int, cmt_entry] = {}
         self.lru_list: list[int] = []
 
-    def query(self, lpa: int) -> cmt_entry | None:
-        if lpa in self.cache:
-            self.lru_list.remove(lpa)
-            self.lru_list.insert(0, lpa)
-            return self.cache[lpa]
-        return None
+    def is_cached(self, lpa: int) -> bool:
+        return lpa in self.cache
 
-    def write(self, lpa: int, ppa: FlashAddress, dirty: bool = True):
-        entry = cmt_entry(ppa=ppa, dirty=dirty)
-        if lpa in self.cache:
-            self.cache[lpa] = entry
-            self.lru_list.remove(lpa)
-            self.lru_list.insert(0, lpa)
-        else:
-            if len(self.cache) >= CMT_SIZE:
-                lru_lpa = self.lru_list.pop()
-                del self.cache[lru_lpa]
-            self.cache[lpa] = entry
-            self.lru_list.insert(0, lpa)
+    def get_cached_entry(self, lpa: int) -> cmt_entry:
+        self.lru_list.remove(lpa)
+        self.lru_list.insert(0, lpa)
+        return self.cache[lpa]
+
+    def udpate_entry(self, lpa: int, address: FlashAddress, dirty: bool):
+        entry = self.cache[lpa]
+        entry.address = address
+        entry.dirty = dirty
+        self.lru_list.remove(lpa)
+        self.lru_list.insert(0, lpa)
+        return
+    
+    def add_entry(self, lpa: int, address: FlashAddress, dirty: bool) -> tuple[int, cmt_entry] | None:
+        entry = cmt_entry(address=address, dirty=dirty)
+        self.cache[lpa] = entry
+        self.lru_list.insert(0, lpa)
+        if len(self.cache) >= CMT_SIZE:
+            lru_lpa = self.lru_list.pop()
+            leaving_entry = (lru_lpa, self.cache.pop(lru_lpa))
+            debug_info(f"[CMT] <add_entry> leaving entry: ({lru_lpa}, {repr(leaving_entry[1])})")
+            return leaving_entry
+        return None
 
 
 from dataclasses import dataclass
@@ -232,11 +240,11 @@ class TSU:
             print(f"[TSU] <_removing_barrier> following tr is removing barrier: {repr(tr)}")
             # 按 address 收集要提交的 transaction，再按 id 移除，避免 list.remove(tr) 触发
             # Transaction.__eq__ 递归比较 rely_on_transactions/required_by_transactions 导致栈溢出
-            to_submit = [tr for tr in self.barriered_trans if tr.lpa == tr.lpa]
-            for tr in to_submit:
-                self.Submit_trans(tr)
-            ids_to_remove = {id(tr) for tr in to_submit}
-            self.barriered_trans = [t for t in self.barriered_trans if id(t) not in ids_to_remove]
+            to_submit = [trans for trans in self.barriered_trans if trans.lpa == tr.lpa]
+            for trans in to_submit:
+                self.Submit_trans(trans)
+            ids_to_remove = {id(trans) for trans in to_submit}
+            self.barriered_trans = [trans for trans in self.barriered_trans if id(trans) not in ids_to_remove]
         self.Schedule()
         return
 
@@ -790,12 +798,13 @@ class Address_Mapping_Domain:
         print("Address Mapping Domain construction validation complete.")
 
     def query_cmt(self, transaction: Transaction) -> bool:
-        entry = self.cmt.query(transaction.lpa)
-        if entry is not None:
-            transaction.address = entry.ppa
+        if self.cmt.is_cached(transaction.lpa):
+            entry = self.cmt.get_cached_entry(transaction.lpa)
+            transaction.address = entry.address
             return True
         if transaction.lpa in self.gmt:
-            transaction.address = self.gmt[transaction.lpa].ppa
+            entry = self.gmt[transaction.lpa]
+            transaction.address = entry.address
             return True
         return False
 
@@ -822,6 +831,7 @@ class Address_Mapping_Unit:
         self.waiting_for_mapping_trans: dict[int, list[Transaction]] = defaultdict(list)
         self.tsu: TSU
         self.cmt: CMT
+        self.gmt: dict[int, cmt_entry] = {}
         self.gtd: dict[int, GTDEntry] = {}
         self.block_manager: Block_Manager
         for domain in self.domains:
@@ -885,10 +895,10 @@ class Address_Mapping_Unit:
         if req.type == RequestType.READ:
             for tr in req.transaction_list:
                 if domain.query_cmt(tr):
-                    print("Cache hit")
+                    debug_info(f"[AMU] <translate_and_submit> Cache hit for tr: {repr(tr)}")
                     self.tsu.Submit_trans(tr)
                 else:
-                    print("Cache miss")
+                    debug_info(f"[AMU] <translate_and_submit> Cache miss for tr: {repr(tr)}")
                     self.waiting_for_mapping_trans[tr.lpa].append(tr)
                     mvpn = tr.lpa // LPA_NO_PER_MAPPING_PAGE
                     if mvpn not in self.gtd:
@@ -896,68 +906,34 @@ class Address_Mapping_Unit:
                     entry = self.gtd[mvpn]
                     if entry.valid_lpa_bitmap[tr.lpa % LPA_NO_PER_MAPPING_PAGE] == 0:
                         raise ValueError("Read request accessing invalid lpa in mapping page")
-                    print("Read mapping page")
+                    debug_info(f"[AMU] <translate_and_submit> Read mapping page")
                     read_tr = self.generate_mapping_read_transaction(tr, mvpn)
                     tr.rely_on_transactions.append(read_tr)
                     read_tr.required_by_transactions.append(tr)
                     self.tsu.Submit_trans(read_tr)
         elif req.type == RequestType.WRITE:
+            """process write requests
+            for each tr in the write request, we need to:
+            1. get a mapping page of this tr
+            2. udpate the mapping page of this tr in cmt/gmt/gtd
+            """
             for tr in req.transaction_list:
-                if domain.query_cmt(tr):
-                    print("Cache hit")
-                    self.tsu.Submit_trans(tr)
-                else:
-                    print("Cache miss")
-                    self.waiting_for_mapping_trans[tr.lpa].append(tr)
-                    mvpn = tr.lpa // LPA_NO_PER_MAPPING_PAGE
-                    lpa_bitmap = [0 for _ in range(LPA_NO_PER_MAPPING_PAGE)]
-                    lpa_bitmap[tr.lpa % LPA_NO_PER_MAPPING_PAGE] = 1
-                    if mvpn not in self.gtd:
-                        print("New mapping page")
-                        write_mapping_info_tr = self.generate_mapping_write_transaction(tr, mvpn, lpa_bitmap, new_page=True)
-                        # add an entry in gtd
-                        entry = GTDEntry(address=write_mapping_info_tr.address, valid_lpa_bitmap=lpa_bitmap)
-                        entry.set_valid_lpa_bitmap(tr.lpa, 1) # set the valid lpa bitmap of the lpa to 1
-                        self.gtd[mvpn] = entry
-                        # get a page for user write request
-                        plane_address = self.get_plane_address_for_lpa(tr.lpa)
-                        page_address = self.block_manager.get_write_frontier(plane_address)
-                        tr.address = page_address
-                        debug_info(f"[AMU] <translate_and_submit> tr got user write page address: {repr(tr)}")
-                        debug_info(f"[AMU] <translate_and_submit> ppa: {self.translate_address_to_ppa(tr.address)}")
-                        # add an entry in cmt
-                        domain.cmt.write(tr.lpa, page_address, dirty=False)
-                        # set relationship
-                        ppa = self.translate_address_to_ppa(tr.address)
-                        write_mapping_info_tr.payload = [None for _ in range(LPA_NO_PER_MAPPING_PAGE)]
-                        write_mapping_info_tr.payload[tr.lpa % LPA_NO_PER_MAPPING_PAGE] = ppa
-
-                        tr.rely_on_transactions.append(write_mapping_info_tr)
-                        write_mapping_info_tr.required_by_transactions.append(tr)
-                        self.block_manager._set_barrier(tr)                                # barrier should be set once a write transaction is issued to prevent from a read access before this write transaction is executed
-                        self.tsu.Submit_trans(write_mapping_info_tr)
-                        self.block_manager._set_barrier(write_mapping_info_tr)
-                    else:
-                        entry = self.gtd[mvpn]
-                        if entry.valid_lpa_bitmap[tr.lpa % LPA_NO_PER_MAPPING_PAGE] == 0: 
-                            print("Update mapping page")
-                            # still need to write a new lpa-ppa mapping info in entry
-                            write_mapping_info_tr = self.generate_mapping_write_transaction(tr, mvpn, lpa_bitmap, new_page=False)
-                            tr.rely_on_transactions.append(write_mapping_info_tr)
-                            write_mapping_info_tr.required_by_transactions.append(tr)
-                            self.block_manager._set_barrier(tr)
-                            self.tsu.Submit_trans(write_mapping_info_tr)
-                            self.block_manager._set_barrier(write_mapping_info_tr)
-                        else:
-                            print("Read mapping page")
-                            # we only need to read the mapping page
-                            read_tr = self.generate_mapping_read_transaction(tr, mvpn)
-                            read_tr.required_by_transactions.append(tr)
-                            tr.rely_on_transactions.append(read_tr)
-                            self.tsu.Submit_trans(tr)
-                            self.block_manager._set_barrier(tr)
-                            self.block_manager._set_barrier(read_tr)
-                            self.tsu.Submit_trans(read_tr)
+                page_address = self.get_plane_address_for_lpa(tr.lpa)
+                page_address = self.block_manager.get_write_frontier(page_address)
+                tr.address = page_address
+                self.block_manager._set_barrier(tr)
+                domain = self.domains[req.sq_id]
+                leaving_entry = domain.cmt.add_entry(tr.lpa, page_address, dirty=True) # dirty is true because a write tr must update the ppa of a lpa
+                debug_info(f"[AMU] <translate_and_submit> add new entry to cmt: {tr.lpa}, {page_address}")
+                if leaving_entry is not None:
+                    debug_info(f"[AMU] <translate_and_submit> cmt full, ejecting entry: {repr(leaving_entry)}")
+                    self.gmt.pop(leaving_entry[0])
+                    self.gmt[tr.lpa] = leaving_entry[1]
+                    if len(self.gmt) >= GMT_SIZE:
+                        debug_info(f"[AMU] <translate_and_submit> GMT is full, triggering mapping write for all gmt entries")
+                        mvpn = leaving_entry[0] // LPA_NO_PER_MAPPING_PAGE
+                        self.generate_mapping_write_transaction(mvpn)
+                self.tsu.Submit_trans(tr)
         # process search and compute requests, whose transaction ppa is decided in segment step
         elif req.type == RequestType.SEARCH:
             assert req.transaction_list is not None, "Search request transaction list is not set"
@@ -974,39 +950,55 @@ class Address_Mapping_Unit:
         print("[AMU] <translate_and_submit> TSU Schedule complete")
         return
     
-    def generate_mapping_write_transaction(self, trigger_tr: Transaction, mvpn, lpa_bitmap: list[int], new_page = True) -> Transaction:
-        if new_page: # the mvpn has no mapping page for it, we need to find a new page to store this mapping page
-            mapping_plane_address = self.get_plane_address_for_mvpn(mvpn) # choose a plane to store the mapping page of mvpn
-            mapping_page_address = self.block_manager.get_write_frontier(mapping_plane_address)
-            write_mapping_info_tr = Transaction(
-                source_req=trigger_tr.source_req,
+    def generate_mapping_write_transaction(self, mvpn) -> None:
+        self.tsu.Prepare_trans_submission()
+        bitmap = [0 for _ in range(LPA_NO_PER_MAPPING_PAGE)]
+        data = [None for _ in range(LPA_NO_PER_MAPPING_PAGE)]
+        for lpa, entry in self.gmt.items():
+            if lpa // LPA_NO_PER_MAPPING_PAGE != mvpn:
+                continue
+            index = lpa % LPA_NO_PER_MAPPING_PAGE
+            bitmap[index] = 1
+            data[index] = self.translate_address_to_ppa(entry.address)
+        if mvpn not in self.gtd:
+            # writing to a new mapping page, get page address for it
+            page_address = self.get_plane_address_for_mvpn(mvpn)
+            page_address = self.block_manager.get_write_frontier(page_address)
+            self.gtd[mvpn] = GTDEntry(address=page_address, valid_lpa_bitmap=bitmap)
+            write_tr = Transaction(
+                source_req=None,
                 type=TransactionType.MAPPING_WRITE,
-                lpa=mvpn,
-                address=mapping_page_address,
-                bitmap=lpa_bitmap,
-                data_ready=True
+                mvpn=mvpn,
+                address=page_address,
+                payload=data,
+                bitmap=bitmap
             )
-            return write_mapping_info_tr
-        else: # the page already exists for mvpn, we only need to update it if necessary
-            mapping_page_address = self.gtd[mvpn].address
-            valid_lpa_bitmap = self.gtd[mvpn].valid_lpa_bitmap
-            write_mapping_info_tr = Transaction(
-                source_req=trigger_tr.source_req,
+            self.tsu.Submit_trans(write_tr)
+        else:
+            gtd_entry = self.gtd[mvpn]
+            write_tr = Transaction(
+                source_req=None,
                 type=TransactionType.MAPPING_WRITE,
-                lpa=mvpn,
-                address=mapping_page_address,
-                data_ready=True
+                mvpn=mvpn,
+                address=gtd_entry.address,
+                payload=data,
+                bitmap=bitmap
             )
-            new_lpa_bitmap = [valid_lpa_bitmap[i] or lpa_bitmap[i] for i in range(LPA_NO_PER_MAPPING_PAGE)]
-            write_mapping_info_tr.bitmap = new_lpa_bitmap
-            self.gtd[mvpn].valid_lpa_bitmap = new_lpa_bitmap # update the valid lpa bitmap of the mapping page
-            if lpa_bitmap != new_lpa_bitmap: # we need to read the mapping page to get mapping info of other lpa
-                read_tr = self.generate_mapping_read_transaction(trigger_tr, mvpn)
-                write_mapping_info_tr.rely_on_transactions.append(read_tr)
-                read_tr.required_by_transactions.append(write_mapping_info_tr)
+            need_read = False
+            for i in range(LPA_NO_PER_MAPPING_PAGE):
+                if gtd_entry.valid_lpa_bitmap[i] == 1 and bitmap[i] == 0:
+                    need_read = True
+                    break
+            # working
+            if need_read:
+                read_tr = self.generate_mapping_read_transaction(write_tr, mvpn)
+                read_tr.required_by_transactions.append(write_tr)
+                write_tr.rely_on_transactions.append(read_tr)
                 self.tsu.Submit_trans(read_tr)
-            return write_mapping_info_tr
 
+            self.tsu.Submit_trans(write_tr)
+        self.tsu.Schedule()
+        return
     def generate_mapping_read_transaction(self, trigger_tr: Transaction, mvpn) -> Transaction:
         mapping_page_address = self.gtd[mvpn].address
         access_bitmap = [0 for _ in range(LPA_NO_PER_MAPPING_PAGE)]
@@ -1014,7 +1006,7 @@ class Address_Mapping_Unit:
         read_tr = Transaction(
             source_req=trigger_tr.source_req,
             type=TransactionType.MAPPING_READ,
-            lpa=mvpn,
+            mvpn=mvpn,
             address=mapping_page_address,
             data_ready=True,
             bitmap=access_bitmap
