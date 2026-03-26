@@ -39,7 +39,7 @@ Event queue (2 events):
 ========== Event [1/2] (time=0) ==========
 SimEvent:
   type:    EventType.REQ_INIT
-  target:  Host(id=2263010573344)
+  target:  Host(id=3094198746528)
   time:    0
   param:   {'req': <Request type=RequestType.WRITE, sq_id=None, transaction_list=[], lha_start=4096, size=1, issue_time=None, finish_time=None, status=None,>}
   ignored: False
@@ -47,7 +47,7 @@ SimEvent:
 ========== Event [2/2] (time=50) ==========
 SimEvent:
   type:    EventType.REQ_INIT
-  target:  Host(id=2263010573344)
+  target:  Host(id=3094198746528)
   time:    50
   param:   {'req': <Request type=RequestType.READ, sq_id=None, transaction_list=[], lha_start=4096, size=1, issue_time=None, finish_time=None, status=None,>}
   ignored: False
@@ -62,7 +62,7 @@ Starting simulation...
 module <Host> is executing event:
 SimEvent:
   type:    EventType.REQ_INIT
-  target:  Host(id=2263010573344)
+  target:  Host(id=3094198746528)
   time:    0
   param:   {'req': <Request type=RequestType.WRITE, sq_id=None, transaction_list=[], lha_start=4096, size=1, issue_time=None, finish_time=None, status=None,>}
   ignored: False
@@ -72,7 +72,7 @@ SimEvent:
 module <Host> is executing event:
 SimEvent:
   type:    EventType.REQ_INIT
-  target:  Host(id=2263010573344)
+  target:  Host(id=3094198746528)
   time:    50
   param:   {'req': <Request type=RequestType.READ, sq_id=None, transaction_list=[], lha_start=4096, size=1, issue_time=None, finish_time=None, status=None,>}
   ignored: False
@@ -81,31 +81,26 @@ SimEvent:
 module <PCIe_link> is executing event:
 SimEvent:
   type:    EventType.DELIVER
-  target:  PCIe_link(id=2263010466448)
+  target:  PCIe_link(id=3100838907728)
   time:    100
-  param:   {'target': <flash_sim.HIL.HIL object at 0x0000020EE6472660>}
+  param:   {'target': <flash_sim.HIL.HIL object at 0x000002D06CEC9070>}
   ignored: False
 --------------------------------------------------------
 --------------------------------------------------------
 module <HIL> is executing event:
 SimEvent:
   type:    EventType.DELIVER
-  target:  PCIe_link(id=2263010466448)
+  target:  PCIe_link(id=3100838907728)
   time:    100
-  param:   {'target': <flash_sim.HIL.HIL object at 0x0000020EE6472660>, 'message': PCIe_message(type=<MessageType.WRITE_REQ: 'WRITE_REQ'>, payload={'req': <Request type=RequestType.WRITE, sq_id=0, transaction_list=[], lha_start=4096, size=1, issue_time=0, finish_time=None, status=None,>})}
+  param:   {'target': <flash_sim.HIL.HIL object at 0x000002D06CEC9070>, 'message': PCIe_message(type=<MessageType.WRITE_REQ: 'WRITE_REQ'>, payload={'req': <Request type=RequestType.WRITE, sq_id=0, transaction_list=[], lha_start=4096, size=1, issue_time=0, finish_time=None, status=None,>})}
   ignored: False
 --------------------------------------------------------
 [Engine] Time = 100, Register_event: type=EventType.DELIVER, scheduled_time=200
 [AMU] translate_and_submit: handling new request: <Request type=RequestType.WRITE, sq_id=0, transaction_list=[<type=TransactionType.USER_WRITE, lpa=64, address=<FlashAddress channel=-1, chip=-1, die=-1, plane=-1, sub_plane=-1, page=-1,>, data_ready=False, Transaction source_req=Request(type=RequestType.WRITE, lha_start=4096, size=1), bitmap=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], response=None, rely_on_transactions=[], required_by_transactions=[], completed=False, exec_event=None>], lha_start=4096, size=1, issue_time=0, finish_time=None, status=None,>
 [TSU] <Prepare_trans_submission> 1
 [Block Manager] set_barrier: tr: <type=TransactionType.USER_WRITE, lpa=64, address=<FlashAddress channel=0, chip=0, die=0, plane=0, sub_plane=0, page=0,>, data_ready=False, Transaction source_req=Request(type=RequestType.WRITE, lha_start=4096, size=1), bitmap=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], response=None, rely_on_transactions=[], required_by_transactions=[], completed=False, exec_event=None>
-[AMU] <translate_and_submit> add new entry to cmt: 64, FlashAddress:
-  channel:   0
-  chip:      0
-  die:       0
-  plane:     0
-  sub_plane: 0
-  page:      0
+[CMT] <add_entry> adding entry: (64, cmt_entry(address=<FlashAddress channel=0, chip=0, die=0, plane=0, sub_plane=0, page=0,>, dirty=True))
+[AMU] <translate_and_submit> added new entry to cmt: 64, <FlashAddress channel=0, chip=0, die=0, plane=0, sub_plane=0, page=0,>
 [TSU] <Submit_trans> submitting trans: <type=TransactionType.USER_WRITE, lpa=64, address=<FlashAddress channel=0, chip=0, die=0, plane=0, sub_plane=0, page=0,>, data_ready=False, Transaction source_req=Request(type=RequestType.WRITE, lha_start=4096, size=1), bitmap=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], response=None, rely_on_transactions=[], required_by_transactions=[], completed=False, exec_event=None>
 [AMU] <translate_and_submit> Prepare trans submission complete
 [TSU] <Schedule> 0
@@ -224,36 +219,36 @@ SimEvent:
 module <PCIe_link> is executing event:
 SimEvent:
   type:    EventType.DELIVER
-  target:  PCIe_link(id=2263010466448)
+  target:  PCIe_link(id=3100838907728)
   time:    200
-  param:   {'target': <flash_sim.Host.Host object at 0x0000020EE5F0FC20>}
+  param:   {'target': <flash_sim.Host.Host object at 0x000002D06C9DFDA0>}
   ignored: False
 --------------------------------------------------------
 --------------------------------------------------------
 module <Host> is executing event:
 SimEvent:
   type:    EventType.DELIVER
-  target:  PCIe_link(id=2263010466448)
+  target:  PCIe_link(id=3100838907728)
   time:    200
-  param:   {'target': <flash_sim.Host.Host object at 0x0000020EE5F0FC20>, 'message': PCIe_message(type=<MessageType.WRITE_DATA_REQ: 'WRITE_DATA_REQ'>, payload={'req': <Request type=RequestType.WRITE, sq_id=0, transaction_list=[<type=TransactionType.USER_WRITE, lpa=64, address=<FlashAddress channel=0, chip=0, die=0, plane=0, sub_plane=0, page=0,>, data_ready=False, Transaction source_req=Request(type=RequestType.WRITE, lha_start=4096, size=1), bitmap=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], response=None, rely_on_transactions=[], required_by_transactions=[], completed=False, exec_event=None>], lha_start=4096, size=1, issue_time=0, finish_time=None, status=None,>})}
+  param:   {'target': <flash_sim.Host.Host object at 0x000002D06C9DFDA0>, 'message': PCIe_message(type=<MessageType.WRITE_DATA_REQ: 'WRITE_DATA_REQ'>, payload={'req': <Request type=RequestType.WRITE, sq_id=0, transaction_list=[<type=TransactionType.USER_WRITE, lpa=64, address=<FlashAddress channel=0, chip=0, die=0, plane=0, sub_plane=0, page=0,>, data_ready=False, Transaction source_req=Request(type=RequestType.WRITE, lha_start=4096, size=1), bitmap=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], response=None, rely_on_transactions=[], required_by_transactions=[], completed=False, exec_event=None>], lha_start=4096, size=1, issue_time=0, finish_time=None, status=None,>})}
   ignored: False
 --------------------------------------------------------
 --------------------------------------------------------
 module <PCIe_link> is executing event:
 SimEvent:
   type:    EventType.DELIVER
-  target:  PCIe_link(id=2263010466448)
+  target:  PCIe_link(id=3100838907728)
   time:    200
-  param:   {'target': <flash_sim.HIL.HIL object at 0x0000020EE6472660>}
+  param:   {'target': <flash_sim.HIL.HIL object at 0x000002D06CEC9070>}
   ignored: False
 --------------------------------------------------------
 --------------------------------------------------------
 module <HIL> is executing event:
 SimEvent:
   type:    EventType.DELIVER
-  target:  PCIe_link(id=2263010466448)
+  target:  PCIe_link(id=3100838907728)
   time:    200
-  param:   {'target': <flash_sim.HIL.HIL object at 0x0000020EE6472660>, 'message': PCIe_message(type=<MessageType.READ_REQ: 'READ_REQ'>, payload={'req': <Request type=RequestType.READ, sq_id=1, transaction_list=[], lha_start=4096, size=1, issue_time=50, finish_time=None, status=None,>})}
+  param:   {'target': <flash_sim.HIL.HIL object at 0x000002D06CEC9070>, 'message': PCIe_message(type=<MessageType.READ_REQ: 'READ_REQ'>, payload={'req': <Request type=RequestType.READ, sq_id=1, transaction_list=[], lha_start=4096, size=1, issue_time=50, finish_time=None, status=None,>})}
   ignored: False
 --------------------------------------------------------
 [AMU] translate_and_submit: handling new request: <Request type=RequestType.READ, sq_id=1, transaction_list=[<type=TransactionType.USER_READ, lpa=64, address=<FlashAddress channel=-1, chip=-1, die=-1, plane=-1, sub_plane=-1, page=-1,>, data_ready=True, Transaction source_req=Request(type=RequestType.READ, lha_start=4096, size=1), bitmap=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], response=None, rely_on_transactions=[], required_by_transactions=[], completed=False, exec_event=None>], lha_start=4096, size=1, issue_time=50, finish_time=None, status=None,>
@@ -377,18 +372,18 @@ SimEvent:
 module <PCIe_link> is executing event:
 SimEvent:
   type:    EventType.DELIVER
-  target:  PCIe_link(id=2263010466448)
+  target:  PCIe_link(id=3100838907728)
   time:    300
-  param:   {'target': <flash_sim.HIL.HIL object at 0x0000020EE6472660>}
+  param:   {'target': <flash_sim.HIL.HIL object at 0x000002D06CEC9070>}
   ignored: False
 --------------------------------------------------------
 --------------------------------------------------------
 module <HIL> is executing event:
 SimEvent:
   type:    EventType.DELIVER
-  target:  PCIe_link(id=2263010466448)
+  target:  PCIe_link(id=3100838907728)
   time:    300
-  param:   {'target': <flash_sim.HIL.HIL object at 0x0000020EE6472660>, 'message': PCIe_message(type=<MessageType.WRITE_DATA: 'WRITE_DATA'>, payload={'req': <Request type=RequestType.WRITE, sq_id=0, transaction_list=[<type=TransactionType.USER_WRITE, lpa=64, address=<FlashAddress channel=0, chip=0, die=0, plane=0, sub_plane=0, page=0,>, data_ready=False, Transaction source_req=Request(type=RequestType.WRITE, lha_start=4096, size=1), bitmap=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], response=None, rely_on_transactions=[], required_by_transactions=[], completed=False, exec_event=None>], lha_start=4096, size=1, issue_time=0, finish_time=None, status=None,>, 'data': [11]})}
+  param:   {'target': <flash_sim.HIL.HIL object at 0x000002D06CEC9070>, 'message': PCIe_message(type=<MessageType.WRITE_DATA: 'WRITE_DATA'>, payload={'req': <Request type=RequestType.WRITE, sq_id=0, transaction_list=[<type=TransactionType.USER_WRITE, lpa=64, address=<FlashAddress channel=0, chip=0, die=0, plane=0, sub_plane=0, page=0,>, data_ready=False, Transaction source_req=Request(type=RequestType.WRITE, lha_start=4096, size=1), bitmap=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], response=None, rely_on_transactions=[], required_by_transactions=[], completed=False, exec_event=None>], lha_start=4096, size=1, issue_time=0, finish_time=None, status=None,>, 'data': [11]})}
   ignored: False
 --------------------------------------------------------
 [HIL] <broadcast_data_ready_signal> req: <Request type=RequestType.WRITE, sq_id=0, transaction_list=[<type=TransactionType.USER_WRITE, lpa=64, address=<FlashAddress channel=0, chip=0, die=0, plane=0, sub_plane=0, page=0,>, data_ready=False, Transaction source_req=Request(type=RequestType.WRITE, lha_start=4096, size=1), bitmap=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], response=None, rely_on_transactions=[], required_by_transactions=[], completed=False, exec_event=None>], lha_start=4096, size=1, issue_time=0, finish_time=None, status=None,>
@@ -497,7 +492,7 @@ SimEvent:
 module <PHY> is executing event:
 SimEvent:
   type:    EventType.PHY_WRITE_CMD_TRANSFERRED
-  target:  PHY(id=2262370057536)
+  target:  PHY(id=3094198493664)
   time:    5400
   param:   {'chip_id': (0, 0), 'die_id': 0, 'transactions': [<type=TransactionType.USER_WRITE, lpa=64, address=<FlashAddress channel=0, chip=0, die=0, plane=0, sub_plane=0, page=0,>, data_ready=True, Transaction source_req=Request(type=RequestType.WRITE, lha_start=4096, size=1), bitmap=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], response=None, rely_on_transactions=[], required_by_transactions=[], completed=False, exec_event=None>]}
   ignored: False
@@ -522,7 +517,7 @@ SimEvent:
 module <PHY> is executing event:
 SimEvent:
   type:    EventType.PHY_CHIP_WRITE_COMPLETE
-  target:  PHY(id=2262370057536)
+  target:  PHY(id=3094198493664)
   time:    755400
   param:   {'chip_id': (0, 0), 'die_id': 0, 'transactions': [<type=TransactionType.USER_WRITE, lpa=64, address=<FlashAddress channel=0, chip=0, die=0, plane=0, sub_plane=0, page=0,>, data_ready=True, Transaction source_req=Request(type=RequestType.WRITE, lha_start=4096, size=1), bitmap=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], response=None, rely_on_transactions=[], required_by_transactions=[], completed=False, exec_event=None>]}
   ignored: False
@@ -531,8 +526,7 @@ SimEvent:
 [HIL] _on_transaction_serviced: tr: <type=TransactionType.USER_WRITE, lpa=64, address=<FlashAddress channel=0, chip=0, die=0, plane=0, sub_plane=0, page=0,>, data_ready=True, Transaction source_req=Request(type=RequestType.WRITE, lha_start=4096, size=1), bitmap=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], response=None, rely_on_transactions=[], required_by_transactions=[], completed=True, exec_event=None>
 [HIL] _on_transaction_serviced: source_req is serviced, sending REQ_COMP to Host: Request(type=RequestType.WRITE, lha_start=4096, size=1)
 [Engine] Time = 755400, Register_event: type=EventType.DELIVER, scheduled_time=755500
-[AMU] <_handle_mapping_read_response> done
-[Block Manager] <_remove_barrier> tr: <type=TransactionType.USER_WRITE, lpa=64, address=<FlashAddress channel=0, chip=0, die=0, plane=0, sub_plane=0, page=0,>, data_ready=True, Transaction source_req=Request(type=RequestType.WRITE, lha_start=4096, size=1), bitmap=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], response=None, rely_on_transactions=[], required_by_transactions=[], completed=True, exec_event=None>
+[AMU] <_handle_mapping_response> done
 [TSU] <Prepare_trans_submission> 1
 [TSU] <_removing_barrier> following tr is removing barrier: <type=TransactionType.USER_WRITE, lpa=64, address=<FlashAddress channel=0, chip=0, die=0, plane=0, sub_plane=0, page=0,>, data_ready=True, Transaction source_req=Request(type=RequestType.WRITE, lha_start=4096, size=1), bitmap=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], response=None, rely_on_transactions=[], required_by_transactions=[], completed=True, exec_event=None>
 [TSU] <Submit_trans> submitting trans: <type=TransactionType.USER_READ, lpa=64, address=<FlashAddress channel=0, chip=0, die=0, plane=0, sub_plane=0, page=0,>, data_ready=True, Transaction source_req=Request(type=RequestType.READ, lha_start=4096, size=1), bitmap=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], response=None, rely_on_transactions=[], required_by_transactions=[], completed=False, exec_event=None>
@@ -653,18 +647,18 @@ SimEvent:
 module <PCIe_link> is executing event:
 SimEvent:
   type:    EventType.DELIVER
-  target:  PCIe_link(id=2263010466448)
+  target:  PCIe_link(id=3100838907728)
   time:    755500
-  param:   {'target': <flash_sim.Host.Host object at 0x0000020EE5F0FC20>}
+  param:   {'target': <flash_sim.Host.Host object at 0x000002D06C9DFDA0>}
   ignored: False
 --------------------------------------------------------
 --------------------------------------------------------
 module <Host> is executing event:
 SimEvent:
   type:    EventType.DELIVER
-  target:  PCIe_link(id=2263010466448)
+  target:  PCIe_link(id=3100838907728)
   time:    755500
-  param:   {'target': <flash_sim.Host.Host object at 0x0000020EE5F0FC20>, 'message': PCIe_message(type=<MessageType.REQ_COMP: 'REQ_COMP'>, payload={'req': <Request type=RequestType.WRITE, sq_id=0, transaction_list=[<type=TransactionType.USER_WRITE, lpa=64, address=<FlashAddress channel=0, chip=0, die=0, plane=0, sub_plane=0, page=0,>, data_ready=True, Transaction source_req=Request(type=RequestType.WRITE, lha_start=4096, size=1), bitmap=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], response=None, rely_on_transactions=[], required_by_transactions=[], completed=True, exec_event=None>], lha_start=4096, size=1, issue_time=0, finish_time=None, status=None,>, 'status': 'completed'})}
+  param:   {'target': <flash_sim.Host.Host object at 0x000002D06C9DFDA0>, 'message': PCIe_message(type=<MessageType.REQ_COMP: 'REQ_COMP'>, payload={'req': <Request type=RequestType.WRITE, sq_id=0, transaction_list=[<type=TransactionType.USER_WRITE, lpa=64, address=<FlashAddress channel=0, chip=0, die=0, plane=0, sub_plane=0, page=0,>, data_ready=True, Transaction source_req=Request(type=RequestType.WRITE, lha_start=4096, size=1), bitmap=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], response=None, rely_on_transactions=[], required_by_transactions=[], completed=True, exec_event=None>], lha_start=4096, size=1, issue_time=0, finish_time=None, status=None,>, 'status': 'completed'})}
   ignored: False
 --------------------------------------------------------
 
@@ -674,7 +668,7 @@ SimEvent:
 module <PHY> is executing event:
 SimEvent:
   type:    EventType.PHY_READ_CMD_TRANSFERRED
-  target:  PHY(id=2262370057536)
+  target:  PHY(id=3094198493664)
   time:    755500
   param:   {'chip_id': (0, 0), 'die_id': 0, 'transactions': [<type=TransactionType.USER_READ, lpa=64, address=<FlashAddress channel=0, chip=0, die=0, plane=0, sub_plane=0, page=0,>, data_ready=True, Transaction source_req=Request(type=RequestType.READ, lha_start=4096, size=1), bitmap=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], response=None, rely_on_transactions=[], required_by_transactions=[], completed=False, exec_event=None>]}
   ignored: False
@@ -699,7 +693,7 @@ SimEvent:
 module <PHY> is executing event:
 SimEvent:
   type:    EventType.PHY_CHIP_READ_COMPLETE
-  target:  PHY(id=2262370057536)
+  target:  PHY(id=3094198493664)
   time:    830500
   param:   {'chip_id': (0, 0), 'die_id': 0, 'transactions': [<type=TransactionType.USER_READ, lpa=64, address=<FlashAddress channel=0, chip=0, die=0, plane=0, sub_plane=0, page=0,>, data_ready=True, Transaction source_req=Request(type=RequestType.READ, lha_start=4096, size=1), bitmap=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], response=None, rely_on_transactions=[], required_by_transactions=[], completed=False, exec_event=None>]}
   ignored: False
@@ -709,7 +703,7 @@ SimEvent:
 module <PHY> is executing event:
 SimEvent:
   type:    EventType.PHY_READ_DATA_TRANSFERRED
-  target:  PHY(id=2262370057536)
+  target:  PHY(id=3094198493664)
   time:    835500
   param:   {'chip_id': (0, 0), 'die_id': 0, 'transactions': [<type=TransactionType.USER_READ, lpa=64, address=<FlashAddress channel=0, chip=0, die=0, plane=0, sub_plane=0, page=0,>, data_ready=True, Transaction source_req=Request(type=RequestType.READ, lha_start=4096, size=1), bitmap=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], response=None, rely_on_transactions=[], required_by_transactions=[], completed=False, exec_event=None>]}
   ignored: False
@@ -718,7 +712,7 @@ SimEvent:
 [HIL] _on_transaction_serviced: tr: <type=TransactionType.USER_READ, lpa=64, address=<FlashAddress channel=0, chip=0, die=0, plane=0, sub_plane=0, page=0,>, data_ready=True, Transaction source_req=Request(type=RequestType.READ, lha_start=4096, size=1), bitmap=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], response=PageData(valid_bitmap=[], data=[], lpa=None, mvpn=None, function=None), rely_on_transactions=[], required_by_transactions=[], completed=True, exec_event=None>
 [HIL] _on_transaction_serviced: source_req is serviced, sending REQ_COMP to Host: Request(type=RequestType.READ, lha_start=4096, size=1)
 [Engine] Time = 835500, Register_event: type=EventType.DELIVER, scheduled_time=835600
-[AMU] <_handle_mapping_read_response> done
+[AMU] <_handle_mapping_response> done
 [TSU] <Prepare_trans_submission> 1
 [TSU] <Schedule> 0
 [TSU] <try_activate> read failed for chip (0, 1)
@@ -844,18 +838,18 @@ SimEvent:
 module <PCIe_link> is executing event:
 SimEvent:
   type:    EventType.DELIVER
-  target:  PCIe_link(id=2263010466448)
+  target:  PCIe_link(id=3100838907728)
   time:    835600
-  param:   {'target': <flash_sim.Host.Host object at 0x0000020EE5F0FC20>}
+  param:   {'target': <flash_sim.Host.Host object at 0x000002D06C9DFDA0>}
   ignored: False
 --------------------------------------------------------
 --------------------------------------------------------
 module <Host> is executing event:
 SimEvent:
   type:    EventType.DELIVER
-  target:  PCIe_link(id=2263010466448)
+  target:  PCIe_link(id=3100838907728)
   time:    835600
-  param:   {'target': <flash_sim.Host.Host object at 0x0000020EE5F0FC20>, 'message': PCIe_message(type=<MessageType.REQ_COMP: 'REQ_COMP'>, payload={'req': <Request type=RequestType.READ, sq_id=1, transaction_list=[<type=TransactionType.USER_READ, lpa=64, address=<FlashAddress channel=0, chip=0, die=0, plane=0, sub_plane=0, page=0,>, data_ready=True, Transaction source_req=Request(type=RequestType.READ, lha_start=4096, size=1), bitmap=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], response=PageData(valid_bitmap=[], data=[], lpa=None, mvpn=None, function=None), rely_on_transactions=[], required_by_transactions=[], completed=True, exec_event=None>], lha_start=4096, size=1, issue_time=50, finish_time=None, status=None,>, 'status': 'completed'})}
+  param:   {'target': <flash_sim.Host.Host object at 0x000002D06C9DFDA0>, 'message': PCIe_message(type=<MessageType.REQ_COMP: 'REQ_COMP'>, payload={'req': <Request type=RequestType.READ, sq_id=1, transaction_list=[<type=TransactionType.USER_READ, lpa=64, address=<FlashAddress channel=0, chip=0, die=0, plane=0, sub_plane=0, page=0,>, data_ready=True, Transaction source_req=Request(type=RequestType.READ, lha_start=4096, size=1), bitmap=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], response=PageData(valid_bitmap=[], data=[], lpa=None, mvpn=None, function=None), rely_on_transactions=[], required_by_transactions=[], completed=True, exec_event=None>], lha_start=4096, size=1, issue_time=50, finish_time=None, status=None,>, 'status': 'completed'})}
   ignored: False
 --------------------------------------------------------
 

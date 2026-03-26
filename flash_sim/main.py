@@ -12,6 +12,7 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 _BASE = Path(__file__).resolve().parent
 INPUT_JSON = str(_BASE.parent / "examples" / "test_read_write.json")
+PRE_INPUT_JSON = str(_BASE.parent / "precondition" / "pre_trace.json")
 MERGED_LOG = str(_BASE / "output" / "test_read_write.log")
 MERGED_LOG_MIRROR_CONSOLE = True
 
@@ -112,7 +113,7 @@ if __name__ == "__main__":
         sim_engine = Engine()
         print("Module construction complete.\n\n")
         try:
-            sim_engine.Start_simulation(INPUT_JSON)
+            sim_engine.Start_simulation(INPUT_JSON, PRE_INPUT_JSON)
         except Exception as e:
             print(f"Error: {e}")
             try:

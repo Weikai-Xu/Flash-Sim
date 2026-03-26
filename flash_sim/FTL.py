@@ -1,22 +1,16 @@
 # -*- coding: utf-8 -*-
 from dataclasses import dataclass
-from doctest import debug
-from nt import access
-from typing import Mapping
-from pathlib import Path
-import json
 from collections import defaultdict
 from dataclasses import field
 
 from .common import *
 from .PHY import PHY
 from . import utils
-from collections import deque as deque
 
 class CMT:
     def __init__(self):
-        self.cache: dict[int, cmt_entry] = field(default_factory=dict)
-        self.lru_list: list[int] = field(default_factory=list)
+        self.cache: dict[int, cmt_entry] = {}
+        self.lru_list: list[int] = []
         self.address_mapping_unit: Address_Mapping_Unit
 
     def is_cached(self, lpa: int) -> bool:
@@ -35,28 +29,21 @@ class CMT:
         self.lru_list.insert(0, lpa)
         return
     
-    def eject_entry(self, lpa: int = None) -> tuple[int, cmt_entry]:
-        if lpa is None:
-            # ejecting least recently used entry
-            lru_lpa = self.lru_list.pop()
-            leaving_entry = (lru_lpa, self.cache.pop(lru_lpa))
-            debug_info(f"[CMT] <eject_entry> ejecting entry: ({lru_lpa}, {repr(leaving_entry[1])})")
-            return leaving_entry
-        else:
-            lru_lpa = lpa
-            self.lru_list.remove(lpa)
-            leaving_entry = (lpa, self.cache.pop(lpa))
-            debug_info(f"[CMT] <eject_entry> ejecting entry: ({lpa}, {repr(leaving_entry[1])})")
-            return leaving_entry
+    def eject_entry(self, lpa: int):
+        self.lru_list.remove(lpa)
+        leaving_entry = self.cache.pop(lpa)
+        self.address_mapping_unit.gmt[lpa] = leaving_entry
+        debug_info(f"[CMT] <eject_entry> ejecting entry: ({lpa}, {repr(leaving_entry)})")
+            
     
     def add_entry(self, lpa: int, address: FlashAddress, dirty: bool) -> None:
         entry = cmt_entry(address=address, dirty=dirty)
+        debug_info(f"[CMT] <add_entry> adding entry: ({lpa}, {repr(entry)})")
+        if len(self.cache) >= CMT_SIZE:
+            lru_lpa = self.lru_list[-1]
+            self.address_mapping_unit.generate_mapping_write_transaction(self.cache, lru_lpa//LPA_NO_PER_MAPPING_PAGE)
         self.cache[lpa] = entry
         self.lru_list.insert(0, lpa)
-        if len(self.cache) >= CMT_SIZE:
-            lru_lpa, leaving_entry = self.eject_entry()
-            debug_info(f"[CMT] <add_entry> ejecting entry: ({lru_lpa}, {repr(leaving_entry[1])})")
-            self.address_mapping_unit.generate_mapping_write_transaction(self.cache, lru_lpa/LPA_NO_PER_MAPPING_PAGE)
 
 
 from dataclasses import dataclass
@@ -74,8 +61,8 @@ class blockBKE:
 @dataclass
 class PlaneBKE:
     num_free_pages: int
-    block_entries: list[blockBKE] = field(default_factory=list)
     write_frontier_block: int
+    block_entries: list[blockBKE] = field(default_factory=list)
     def __init__(self) -> None:
         self.num_free_pages = PAGE_PER_BLOCK * BLOCK_PER_PLANE
         self.block_entries = [blockBKE(invalid_pages=0, write_frontier=0, wl_level=0) for _ in range(BLOCK_PER_PLANE)]
@@ -108,6 +95,7 @@ class Block_Manager:
         self.pages_per_block = pages_per_block
         self._construction_valid = False
         self.lpa_protected_book = dict[int, Transaction]()
+        self.ppa_protected_book = dict[int, Transaction]()
         print("Initializing block keeping book...")
         # 结构为：channel -> chip -> die -> plane -> [blockBKE, ...]，与 address 前 5 维一致
         self.block_keeping_book = [
@@ -141,12 +129,20 @@ class Block_Manager:
     
     def _set_barrier(self, tr: Transaction):
         debug_info(f"[Block Manager] set_barrier: tr: {repr(tr)}")
-        self.lpa_protected_book[tr.lpa] = tr
+        if tr.type in [TransactionType.USER_WRITE]:
+            self.lpa_protected_book[tr.lpa] = tr
+        elif tr.type in [TransactionType.MAPPING_WRITE, TransactionType.GC_WRITE, TransactionType.GC_ERASE]:
+            self.ppa_protected_book[utils.translate_address_to_ppa(tr.address)] = tr
+        else:
+            raise ValueError(f"[Block Manager] <_set_barrier> unknown transaction type: {tr.type}")
+        
 
     def _remove_barrier(self, tr: Transaction):
-        if tr.type in [TransactionType.USER_WRITE, TransactionType.MAPPING_WRITE, TransactionType.GC_WRITE, TransactionType.GC_ERASE]: # only these transactions need to remove barrier
-            debug_info(f"[Block Manager] <_remove_barrier> tr: {repr(tr)}")
+        if tr.type in [TransactionType.USER_WRITE]:
             self.lpa_protected_book.pop(tr.lpa)
+        elif tr.type in [TransactionType.MAPPING_WRITE, TransactionType.GC_WRITE, TransactionType.GC_ERASE]:
+            self.ppa_protected_book.pop(utils.translate_address_to_ppa(tr.address))
+        return
 
     def get_block_bke(self, addr: FlashAddress) -> blockBKE:
         # addr: 6 元组 (channel, chip, die, plane, block, page)，使用前 5 维索引
@@ -269,10 +265,14 @@ class TSU:
         self._onfly_schedule_req_no += 1
         print(f"[TSU] <Prepare_trans_submission> {self._onfly_schedule_req_no}")
 
-    def Submit_trans(self, trans):
+    def Submit_trans(self, trans: Transaction):
         """Endeque a transaction to the appropriate per-chip priority deque."""
         if trans.lpa in self.block_manager.lpa_protected_book.keys() and self.block_manager.lpa_protected_book[trans.lpa] != trans:
             debug_info(f"[TSU] <Submit_trans> facing barrier, lpa: {trans.lpa}, trans: {repr(trans)}")
+            self.barriered_trans.append(trans)
+            return
+        if utils.translate_address_to_ppa(trans.address) in self.block_manager.ppa_protected_book.keys() and self.block_manager.ppa_protected_book[utils.translate_address_to_ppa(trans.address)] != trans:
+            debug_info(f"[TSU] <Submit_trans> facing barrier, address: {trans.address}, trans: {repr(trans)}")
             self.barriered_trans.append(trans)
             return
         debug_info(f"[TSU] <Submit_trans> submitting trans: {repr(trans)}")
@@ -847,10 +847,10 @@ class Address_Mapping_Unit:
         for domain in self.domains:
             domain.cmt.address_mapping_unit = self
     
-    def _handle_mapping_read_response(self, tr: Transaction):
+    def _handle_mapping_response(self, tr: Transaction):
         # handle response for tr waiting mapping info
         if tr.type == TransactionType.MAPPING_READ:
-            print(f"[AMU] <_handle_mapping_read_response> response tr: {repr(tr)}")
+            print(f"[AMU] <_handle_mapping_response> response tr: {repr(tr)}")
             self.tsu.Prepare_trans_submission()
             # get arriving lpa in the finished mapping read transaction
             arriving_lpa = []
@@ -859,7 +859,7 @@ class Address_Mapping_Unit:
                     continue
                 lpa = i + tr.lpa * LPA_NO_PER_MAPPING_PAGE
                 arriving_lpa.append(lpa) 
-            debug_info(f"[AMU] <_handle_mapping_read_response> arriving_lpa: {arriving_lpa}, response: {tr.response}")
+            debug_info(f"[AMU] <_handle_mapping_response> arriving_lpa: {arriving_lpa}, response: {tr.response}")
             # check if the arriving lpa number matches the response number
             if len(arriving_lpa) != len(tr.response):
                 raise ValueError(f"Arriving lpa number mismatch, arriving_lpa: {arriving_lpa}, response: {tr.response}")
@@ -870,18 +870,29 @@ class Address_Mapping_Unit:
                 # add entry in cmt
                 domain = self.domains[tr.source_req.sq_id]
                 if not domain.cmt.is_cached(lpa):
-                    domain.cmt.add_entry(lpa, self.translate_ppa_to_address(ppa), dirty=False)
+                    domain.cmt.add_entry(lpa, utils.translate_ppa_to_address(ppa), dirty=False)
                 waiting_trs = self.waiting_for_mapping_trans[lpa]
-                debug_info(f"[AMU] <_handle_mapping_read_response> number of waiting trs: {len(waiting_trs)}")
+                debug_info(f"[AMU] <_handle_mapping_response> number of waiting trs: {len(waiting_trs)}")
                 for waiting_tr in waiting_trs:
-                    address = self.translate_ppa_to_address(ppa)
+                    address = utils.translate_ppa_to_address(ppa)
                     waiting_tr.address = address
                     domain = self.domains[waiting_tr.source_req.sq_id]
                     domain.cmt.write(lpa, address, dirty=False)
                     self.tsu.Submit_trans(waiting_tr)
                 self.waiting_for_mapping_trans[lpa].clear()
             self.tsu.Schedule()
-        debug_info(f"[AMU] <_handle_mapping_read_response> done")
+        elif tr.type == TransactionType.MAPPING_WRITE:
+            print(f"[AMU] <_handle_mapping_response> response tr: {repr(tr)}")
+            leaving_lpa = []
+            for i in range(len(tr.bitmap)):
+                if tr.bitmap[i] == 0:
+                    continue
+                lpa = tr.mvpn * LPA_NO_PER_MAPPING_PAGE + i
+                leaving_lpa.append(lpa)
+            debug_info(f"[AMU] <_handle_mapping_response> leaving_lpa: {leaving_lpa}")
+            for lpa in leaving_lpa:
+                self.gmt.pop(lpa)
+        debug_info(f"[AMU] <_handle_mapping_response> done")
         return
     
     def translate_and_submit(self, req: Request):
@@ -928,7 +939,7 @@ class Address_Mapping_Unit:
                 self.block_manager._set_barrier(tr)
                 domain = self.domains[req.sq_id]
                 domain.cmt.add_entry(tr.lpa, page_address, dirty=True) # dirty is true because a write tr must update the ppa of a lpa
-                debug_info(f"[AMU] <translate_and_submit> add new entry to cmt: {tr.lpa}, {page_address}")
+                debug_info(f"[AMU] <translate_and_submit> added new entry to cmt: {tr.lpa}, {page_address}")
                 self.tsu.Submit_trans(tr)
         # process search and compute requests, whose transaction ppa is decided in segment step
         elif req.type == RequestType.SEARCH:
@@ -947,16 +958,20 @@ class Address_Mapping_Unit:
         return
     
     def generate_mapping_write_transaction(self, cache: dict[int, cmt_entry], mvpn: int) -> None:
+        debug_info(f"[AMU] <generate_mapping_write_transaction> writing back cache for mvpn: {mvpn}")
         self.tsu.Prepare_trans_submission()
         bitmap = [0 for _ in range(LPA_NO_PER_MAPPING_PAGE)]
         data = [None for _ in range(LPA_NO_PER_MAPPING_PAGE)]
+        lpa_to_eject = []
         for lpa, entry in cache.items():
             if lpa // LPA_NO_PER_MAPPING_PAGE != mvpn: # write back clear entry in the meantime
                 continue
             index = lpa % LPA_NO_PER_MAPPING_PAGE
             bitmap[index] = 1
-            data[index] = self.translate_address_to_ppa(entry.address)
+            data[index] = utils.translate_address_to_ppa(entry.address)
             self.gmt[lpa] = entry
+            lpa_to_eject.append(lpa)
+        for lpa in lpa_to_eject:
             self.cmt.eject_entry(lpa)
         if mvpn not in self.gtd:
             # writing to a new mapping page, get page address for it
@@ -972,6 +987,7 @@ class Address_Mapping_Unit:
                 bitmap=bitmap
             )
             self.tsu.Submit_trans(write_tr)
+            self.block_manager._set_barrier(write_tr)
         else:
             gtd_entry = self.gtd[mvpn]
             write_tr = Transaction(
@@ -995,6 +1011,7 @@ class Address_Mapping_Unit:
                 self.tsu.Submit_trans(read_tr)
 
             self.tsu.Submit_trans(write_tr)
+            self.block_manager._set_barrier(write_tr)
         self.tsu.Schedule()
         return
     def generate_mapping_read_transaction(self, trigger_tr: Transaction, mvpn) -> Transaction:
@@ -1040,28 +1057,8 @@ class Address_Mapping_Unit:
         )
         return address
 
-    def translate_address_to_ppa(self, address: FlashAddress) -> int:
-        channel_id = address.channel
-        chip_id = address.chip
-        die_id = address.die
-        plane_id = address.plane
-        sub_plane_id = address.sub_plane
-        page_id = address.page
-        return (((((channel_id * CHIP_PER_CHANNEL + chip_id) * DIE_PER_CHIP + die_id) * PLANE_PER_DIE + plane_id) * BLOCK_PER_PLANE + sub_plane_id) * PAGE_PER_BLOCK + page_id)
-
-
-    def translate_ppa_to_address(self, ppa: int) -> FlashAddress:
-        page_id = ppa % PAGE_PER_BLOCK
-        ppa //= PAGE_PER_BLOCK
-        sub_plane_id = ppa % BLOCK_PER_PLANE
-        ppa //= BLOCK_PER_PLANE
-        plane_id = ppa % PLANE_PER_DIE
-        ppa //= PLANE_PER_DIE
-        die_id = ppa % DIE_PER_CHIP
-        ppa //= DIE_PER_CHIP
-        chip_id = ppa % CHIP_PER_CHANNEL
-        channel_id = ppa // CHIP_PER_CHANNEL
-        return FlashAddress(channel=channel_id, chip=chip_id, die=die_id, plane=plane_id, sub_plane=sub_plane_id, page=page_id)
+class GC_Unit:
+    pass
 
 
 class FTL:

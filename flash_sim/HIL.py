@@ -113,6 +113,8 @@ class HIL:
         print(f"[HIL] _on_transaction_serviced: tr: {repr(tr)}")
         source_req = tr.source_req
         tr.completed = True
+        if source_req is None:
+            return
         if source_req.is_serviced():
             req_brief = f"Request(type={source_req.type}, lha_start={source_req.lha_start}, size={source_req.size})"
             print(f"[HIL] _on_transaction_serviced: source_req is serviced, sending REQ_COMP to Host: {req_brief}")

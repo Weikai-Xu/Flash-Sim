@@ -17,7 +17,7 @@ class Device:
         self.phy.connect_channel_idle_signal(self.ftl.tsu._on_channel_idle)
         self.phy.connect_chip_idle_signal(self.ftl.tsu._on_chip_idle)
         self.phy.connect_transaction_serviced_signal(self.hil._on_transaction_serviced)
-        self.phy.connect_transaction_serviced_signal(self.ftl.address_mapping_unit._handle_mapping_read_response)
+        self.phy.connect_transaction_serviced_signal(self.ftl.address_mapping_unit._handle_mapping_response)
         self.phy.connect_transaction_serviced_signal(self.ftl.block_manager._remove_barrier)
         self.phy.connect_transaction_serviced_signal(self.ftl.tsu._removing_barrier)
 

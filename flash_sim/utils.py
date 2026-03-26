@@ -3,32 +3,28 @@
 
 from .common import *
 
-def translate_ppa_to_address(ppa: int) -> tuple:
-    """将 PPA 整数解析为 address 6 元组 (channel, chip, die, plane, block, page)，供 Block_Manager 等使用。
-    address 仅用于 ppa 与 address 的互转；lpa 不在此处与 address 互转，lpa 经 FTL 映射为 ppa 后再经本函数得到 address。"""
-    if ppa < 0:
-        return (0, 0, 0, 0, 0, 0)
-    page = ppa % PAGE_PER_BLOCK
+def translate_ppa_to_address(ppa: int) -> FlashAddress:
+    page_id = ppa % PAGE_PER_BLOCK
     ppa //= PAGE_PER_BLOCK
-    block = ppa % BLOCK_PER_PLANE
+    sub_plane_id = ppa % BLOCK_PER_PLANE
     ppa //= BLOCK_PER_PLANE
-    plane = ppa % PLANE_PER_DIE
+    plane_id = ppa % PLANE_PER_DIE
     ppa //= PLANE_PER_DIE
-    die = ppa % DIE_PER_CHIP
+    die_id = ppa % DIE_PER_CHIP
     ppa //= DIE_PER_CHIP
-    chip = ppa % CHIP_PER_CHANNEL
-    channel = ppa // CHIP_PER_CHANNEL
-    return (channel, chip, die, plane, block, page)
+    chip_id = ppa % CHIP_PER_CHANNEL
+    channel_id = ppa // CHIP_PER_CHANNEL
+    return FlashAddress(channel=channel_id, chip=chip_id, die=die_id, plane=plane_id, sub_plane=sub_plane_id, page=page_id)
 
 
-def translate_address_to_ppa(addr: tuple) -> int:
-    """将 address 6 元组 (channel, chip, die, plane, block, page) 编码为 PPA 整数。
-    与 translate_ppa_to_address 互逆，使用相同层级与 common 常量。仅用于 ppa 与 address 互转；lpa 不在此处与 address 互转。"""
-    if len(addr) < 6:
-        return 0
-    channel, chip, die, plane, block, page = addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]
-    return ((((channel * CHIP_PER_CHANNEL + chip) * DIE_PER_CHIP + die) * PLANE_PER_DIE + plane)
-            * BLOCK_PER_PLANE + block) * PAGE_PER_BLOCK + page
+def translate_address_to_ppa(address: FlashAddress) -> int:
+    channel_id = address.channel
+    chip_id = address.chip
+    die_id = address.die
+    plane_id = address.plane
+    sub_plane_id = address.sub_plane
+    page_id = address.page
+    return (((((channel_id * CHIP_PER_CHANNEL + chip_id) * DIE_PER_CHIP + die_id) * PLANE_PER_DIE + plane_id) * BLOCK_PER_PLANE + sub_plane_id) * PAGE_PER_BLOCK + page_id)
 
 def translate_lpa_to_search_address(lpa: int) -> tuple:
     """将 LPA 整数解析为 (channel, chip, die, plane, search_bank) 元组，供 Search_Manager 使用。"""

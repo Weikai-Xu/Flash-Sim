@@ -116,8 +116,7 @@ STATIC_BASE_LHA = SECTOR_PER_PAGE * PAGE_PER_BLOCK * BLOCK_PER_PLANE * PLANE_PER
 
 
 # ----- 常量 -----
-CMT_SIZE = 32
-GMT_SIZE = 32
+CMT_SIZE = 2
 LPA_NO_PER_SECTOR = 4
 LPA_NO_PER_MAPPING_PAGE = LPA_NO_PER_SECTOR * SECTOR_PER_PAGE
 NUM_OF_QUEUES = 8
@@ -198,7 +197,7 @@ class Transaction:
     
     def __repr__(self) -> str:
         req = self.source_req
-        source_req_brief = f"Request(type={req.type}, lha_start={req.lha_start}, size={req.size})"
+        source_req_brief = f"Request(type={req.type if req is not None else 'None'}, lha_start={req.lha_start if req is not None else 'None'}, size={req.size if req is not None else 'None'})"
         rely_on_transactions_brief = f"{len(self.rely_on_transactions)} transaction(s)" if self.rely_on_transactions else "[]"
         required_by_transactions_brief = f"{len(self.required_by_transactions)} transaction(s)" if self.required_by_transactions else "[]"
         items = [
@@ -280,16 +279,7 @@ class FlashAddress:
     page: int
 
     def __str__(self) -> str:
-        lines = [
-            "FlashAddress:",
-            f"  channel:   {self.channel}",
-            f"  chip:      {self.chip}",
-            f"  die:       {self.die}",
-            f"  plane:     {self.plane}",
-            f"  sub_plane: {self.sub_plane}",
-            f"  page:      {self.page}",
-        ]
-        return "\n".join(lines)
+        return self.__repr__()
     def __repr__(self) -> str:
         items = [
             f"FlashAddress channel={self.channel},",
