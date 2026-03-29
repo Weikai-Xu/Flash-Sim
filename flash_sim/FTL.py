@@ -2,6 +2,8 @@
 from dataclasses import dataclass
 from collections import defaultdict
 from dataclasses import field
+from typing import Any
+from flash_sim.common import Transaction
 
 from .common import *
 from .PHY import PHY
@@ -21,7 +23,7 @@ class CMT:
         self.lru_list.insert(0, lpa)
         return self.cache[lpa]
 
-    def udpate_entry(self, lpa: int, address: FlashAddress, dirty: bool):
+    def update_entry(self, lpa: int, address: FlashAddress, dirty: bool):
         entry = self.cache[lpa]
         entry.address = address
         entry.dirty = dirty
@@ -50,23 +52,27 @@ from dataclasses import dataclass
 
 @dataclass
 class blockBKE:
-    invalid_pages: int   # 存储无效页的 page_id
-    write_frontier: int  # 下次写入的目标page_id
-    wl_level: int        # 该block被erase的次数
-    def __init__(self, invalid_pages: int, write_frontier: int, wl_level: int) -> None:
-        self.invalid_pages = invalid_pages
-        self.write_frontier = write_frontier
-        self.wl_level = wl_level
+    invalid_page_count: int = 0
+    valid_page_count: int = 0
+    free_page_count: int = PAGE_PER_BLOCK
+    write_frontier: int = 0  # 下次写入的目标page_id
+    wl_level: int = 0  # 记录该block被erase的次数
 
 @dataclass
 class PlaneBKE:
-    num_free_pages: int
     write_frontier_block: int
+    free_block_pool: set[int]
     block_entries: list[blockBKE] = field(default_factory=list)
+    free_page_count: int = PAGE_PER_BLOCK * BLOCK_PER_PLANE
+    valid_page_count: int = 0
+    invalid_page_count: int = 0
     def __init__(self) -> None:
-        self.num_free_pages = PAGE_PER_BLOCK * BLOCK_PER_PLANE
         self.block_entries = [blockBKE(invalid_pages=0, write_frontier=0, wl_level=0) for _ in range(BLOCK_PER_PLANE)]
         self.write_frontier_block = 0
+        self.free_block_pool = set[int](range(BLOCK_PER_PLANE))
+        self.free_page_count = PAGE_PER_BLOCK * BLOCK_PER_PLANE
+        self.valid_page_count = 0
+        self.invalid_page_count = 0
 
 
 
@@ -96,6 +102,7 @@ class Block_Manager:
         self._construction_valid = False
         self.lpa_protected_book = dict[int, Transaction]()
         self.ppa_protected_book = dict[int, Transaction]()
+        self.gc_wl_manager: GC_WL_Manager
         print("Initializing block keeping book...")
         # 结构为：channel -> chip -> die -> plane -> [blockBKE, ...]，与 address 前 5 维一致
         self.block_keeping_book = [
@@ -118,13 +125,18 @@ class Block_Manager:
         die_id = plane_address.die
         plane_id = plane_address.plane
         plane_bke = self.block_keeping_book[channel_id][chip_id][die_id][plane_id]
-        plane_bke.num_free_pages -= 1
         bke = plane_bke.block_entries[plane_bke.write_frontier_block]
         page_id = bke.write_frontier
         bke.write_frontier += 1
+        bke.free_page_count -= 1
+        bke.valid_page_count += 1
+        plane_bke.free_page_count -= 1
+        plane_bke.valid_page_count += 1
         if bke.write_frontier == PAGE_PER_BLOCK:
             bke.write_frontier = 0
+            plane_bke.free_block_pool.pop(plane_bke.write_frontier_block)
             plane_bke.write_frontier_block += 1
+        self.gc_wl_manager.check_gc()
         return FlashAddress(channel=channel_id, chip=chip_id, die=die_id, plane=plane_id, sub_plane=plane_bke.write_frontier_block, page=page_id)
     
     def _set_barrier(self, tr: Transaction):
@@ -139,15 +151,18 @@ class Block_Manager:
 
     def _remove_barrier(self, tr: Transaction):
         if tr.type in [TransactionType.USER_WRITE]:
-            self.lpa_protected_book.pop(tr.lpa)
+            self.lpa_protected_book.pop(tr.lpa) if tr.lpa in self.lpa_protected_book else None
         elif tr.type in [TransactionType.MAPPING_WRITE, TransactionType.GC_WRITE, TransactionType.GC_ERASE]:
-            self.ppa_protected_book.pop(utils.translate_address_to_ppa(tr.address))
+            self.ppa_protected_book.pop(utils.translate_address_to_ppa(tr.address)) if utils.translate_address_to_ppa(tr.address) in self.ppa_protected_book else None
         return
 
     def get_block_bke(self, addr: FlashAddress) -> blockBKE:
-        # addr: 6 元组 (channel, chip, die, plane, block, page)，使用前 5 维索引
         channel_id, chip_id, die_id, plane_id, block_id = addr.channel, addr.chip, addr.die, addr.plane, addr.sub_plane
         return self.block_keeping_book[channel_id][chip_id][die_id][plane_id][block_id]
+
+    def get_plane_bke(self, addr: FlashAddress) -> PlaneBKE:
+        channel_id, chip_id, die_id, plane_id = addr.channel, addr.chip, addr.die, addr.plane
+        return self.block_keeping_book[channel_id][chip_id][die_id][plane_id]
 
     def is_free(self, addr: FlashAddress) -> bool:
         bke = self.get_block_bke(addr)
@@ -182,13 +197,6 @@ class Block_Manager:
         bke.write_frontier = 0
         bke.wl_level += 1
         bke.protected = False
-
-
-class GC_WL_Manager:
-    def __init__(self):
-        print("Initializing GC/WL Manager...")
-        pass
-        print("GC/WL Manager initialization complete.")
 
 class TSU:
     """Transaction Scheduling Unit — Out-of-Order version.
@@ -269,11 +277,9 @@ class TSU:
         """Endeque a transaction to the appropriate per-chip priority deque."""
         if trans.lpa in self.block_manager.lpa_protected_book.keys() and self.block_manager.lpa_protected_book[trans.lpa] != trans:
             debug_info(f"[TSU] <Submit_trans> facing barrier, lpa: {trans.lpa}, trans: {repr(trans)}")
-            self.barriered_trans.append(trans)
             return
         if utils.translate_address_to_ppa(trans.address) in self.block_manager.ppa_protected_book.keys() and self.block_manager.ppa_protected_book[utils.translate_address_to_ppa(trans.address)] != trans:
             debug_info(f"[TSU] <Submit_trans> facing barrier, address: {trans.address}, trans: {repr(trans)}")
-            self.barriered_trans.append(trans)
             return
         debug_info(f"[TSU] <Submit_trans> submitting trans: {repr(trans)}")
         channel = trans.address.channel
@@ -782,6 +788,7 @@ class TSU:
 class Address_Mapping_Domain:
     def __init__(self):
         self.cmt: CMT
+        self.gmt: dict[int, cmt_entry] = {}
         self._construction_valid: bool = False
     
     def Validate_construction(self):
@@ -819,6 +826,7 @@ class Address_Mapping_Unit:
         self._construction_valid = True
         for domain in self.domains:
             assert domain.gtd == self.gtd, "Address Mapping Unit domains gtd is not the same as Address Mapping Unit gtd"
+            assert domain.gmt == self.gmt, "Address Mapping Unit domains gmt is not the same as Address Mapping Unit gmt"
             domain.Validate_construction()
         print("Address Mapping Unit construction validation complete.")
 
@@ -834,6 +842,7 @@ class Address_Mapping_Unit:
         self.block_manager: Block_Manager
         for domain in self.domains:
             domain.gtd = self.gtd
+            domain.gmt = self.gmt
         if CMT_TYPE == "seperated":
             for domain in self.domains:
                 domain.cmt = CMT()
@@ -938,8 +947,10 @@ class Address_Mapping_Unit:
                 tr.address = page_address
                 self.block_manager._set_barrier(tr)
                 domain = self.domains[req.sq_id]
-                domain.cmt.add_entry(tr.lpa, page_address, dirty=True) # dirty is true because a write tr must update the ppa of a lpa
-                debug_info(f"[AMU] <translate_and_submit> added new entry to cmt: {tr.lpa}, {page_address}")
+                if not domain.cmt.is_cached(tr.lpa):
+                    domain.cmt.add_entry(tr.lpa, page_address, dirty=True) # dirty is true because a write tr must update the ppa of a lpa
+                else:
+                    domain.cmt.update_entry(tr.lpa, page_address, dirty=True)
                 self.tsu.Submit_trans(tr)
         # process search and compute requests, whose transaction ppa is decided in segment step
         elif req.type == RequestType.SEARCH:
@@ -1057,9 +1068,47 @@ class Address_Mapping_Unit:
         )
         return address
 
-class GC_Unit:
-    pass
+class GC_WL_Manager:
+    def __init__(self):
+        self._construction_valid: bool = False
+        self.block_manager: Block_Manager
+        self.tsu: TSU
+    
+    def Validate_construction(self):
+        pass
 
+    def check_gc(self):
+        for channel in range(CHANNEL_NO):
+            for chip in range(CHIP_PER_CHANNEL):
+                for die in range(DIE_PER_CHIP):
+                    for plane in range(PLANE_PER_DIE):
+                        plane_bke = self.block_manager.get_plane_bke(FlashAddress(channel=channel, chip=chip, die=die, plane=plane, block=-1, page=-1))
+                        if len(plane_bke.free_block_pool) <= GC_WL_MANAGER_FREE_BLOCK_POOL_THRESHOLD:
+                            self.trigger_gc(FlashAddress(channel=channel, chip=chip, die=die, plane=plane, block=-1, page=-1))
+    
+    def trigger_gc(self, addr: FlashAddress):
+        print("[GC] trigger gc for addr: {addr}")
+        plane_bke = self.block_manager.get_plane_bke(addr)
+        max_invalid_page_count = 0
+        max_invalid_page_count_block = -1
+        min_wl_level = float('inf')
+        min_wl_level_block = -1
+        for block in range(BLOCK_PER_PLANE):
+            bke = plane_bke.block_entries[block]
+            if bke.invalid_page_count > max_invalid_page_count:
+                max_invalid_page_count = bke.invalid_page_count
+                max_invalid_page_count_block = block
+            if bke.wl_level < min_wl_level:
+                min_wl_level = bke.wl_level
+                min_wl_level_block = block
+        if max_invalid_page_count_block == -1:
+            print("[GC] <trigger_gc> No block with invalid page found! Erasing block_id 0")
+            max_invalid_page_count_block = 0
+        self.block_manager.erase_block(FlashAddress(channel=addr.channel, chip=addr.chip, die=addr.die, plane=addr.plane, block=max_invalid_page_count_block, page=-1))
+        plane_bke.free_block_pool.add(max_invalid_page_count_block)
+        plane_bke.free_page_count += PAGE_PER_BLOCK
+        plane_bke.valid_page_count -= PAGE_PER_BLOCK
+        plane_bke.invalid_page_count -= max_invalid_page_count
 
 class FTL:
     def Validate_construction(self):
@@ -1085,6 +1134,8 @@ class FTL:
         self.block_manager = Block_Manager()
         self.tsu = TSU()
         self.tsu.block_manager = self.block_manager
+        self.block_manager.gc_wl_manager = self.gc_wl_manager
+        self.gc_wl_manager.block_manager = self.block_manager
         self.address_mapping_unit.block_manager = self.block_manager
         self.address_mapping_unit.tsu = self.tsu
         for domain in self.address_mapping_unit.domains:

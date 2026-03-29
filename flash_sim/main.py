@@ -11,9 +11,9 @@ from pathlib import Path
 #   单文件句柄 + 互斥写入；每次 write 即 flush，顺序与「python -u … 2>&1 | tee file」一致。
 # ---------------------------------------------------------------------------
 _BASE = Path(__file__).resolve().parent
-INPUT_JSON = str(_BASE.parent / "examples" / "test_read_write.json")
+INPUT_JSON = str(_BASE.parent / "test_case" / "test_multi_write_req.json")
 PRE_INPUT_JSON = str(_BASE.parent / "precondition" / "pre_trace.json")
-MERGED_LOG = str(_BASE / "output" / "test_read_write.log")
+MERGED_LOG = str(_BASE / "output" / "test_multi_write_req.log")
 MERGED_LOG_MIRROR_CONSOLE = True
 
 
