@@ -173,6 +173,8 @@ class Transaction:
     data_ready: bool = True
     payload: list[int] = field(default_factory=list) # register data if type is TransactionType.USER_..., else payload for mapping write
     response: Optional[list[int]] = None # register response data when necessary
+    # GC: source physical page before migrate (for mapping / BKE invalidation)
+    gc_old_address: Optional[FlashAddress] = field(default=None)
 
     def get_response_from_transaction(self, tr: 'Transaction'):
         if self.type == TransactionType.MAPPING_WRITE and tr.type == TransactionType.MAPPING_READ:
@@ -189,6 +191,14 @@ class Transaction:
             for i in range(SECTOR_PER_PAGE):
                 self.bitmap[i] = self.bitmap[i] or tr.bitmap[i]
                 self.payload[i] = tr.payload[i] if self.payload[i] is None else self.payload[i]
+        elif self.type == TransactionType.GC_WRITE and tr.type == TransactionType.GC_READ:
+            pd = tr.response
+            if pd is not None:
+                for i in range(SECTOR_PER_PAGE):
+                    self.bitmap[i] = self.bitmap[i] or tr.bitmap[i]
+                    if hasattr(pd, "data") and pd.data:
+                        self.payload[i] = pd.data[i] if self.payload[i] is None else self.payload[i]
+            self.data_ready = True
         
         return
 

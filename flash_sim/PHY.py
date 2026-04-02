@@ -435,7 +435,11 @@ class PHY():
             if die_bke.active_command:
                 for tr in transactions:
                     tr.completed = True
-                    if tr.type == TransactionType.MAPPING_WRITE:
+                    if tr.type in (
+                        TransactionType.MAPPING_WRITE,
+                        TransactionType.USER_WRITE,
+                        TransactionType.GC_WRITE,
+                    ):
                         self._write_to_storage(tr)
                     debug_info(f"[PHY] following tr completed: {tr}")
                     for required_by_tr in tr.required_by_transactions:
@@ -511,7 +515,7 @@ class PHY():
     def _write_to_storage(self, tr: Transaction) -> None:
         if tr.type == TransactionType.MAPPING_WRITE:
             page_type = PageType.MAPPING
-        elif tr.type == TransactionType.USER_WRITE:
+        elif tr.type in (TransactionType.USER_WRITE, TransactionType.GC_WRITE):
             page_type = PageType.USER
         else:
             raise ValueError(f"Invalid transaction type for writing to storage: {tr.type}")
@@ -553,6 +557,12 @@ class PHY():
             if not valid:
                 raise ValueError(f"[PHY] <_read_from_storage> accessing invalid sector in user page!")
         return pagedata
+
+    def clear_block_pages(self, addr: FlashAddress) -> None:
+        """Erase simulation: reset all PageData in one physical block."""
+        ch, chip, die, pl, blk = addr.channel, addr.chip, addr.die, addr.plane, addr.sub_plane
+        for pg in range(PAGE_PER_BLOCK):
+            self._storage[ch][chip][die][pl][blk][pg] = PageData()
 
 
 # ── Module-level utility ──────────────────────────────────────────────────────
