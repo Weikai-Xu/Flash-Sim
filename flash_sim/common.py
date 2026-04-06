@@ -121,7 +121,7 @@ LPA_NO_PER_SECTOR = 4
 LPA_NO_PER_MAPPING_PAGE = LPA_NO_PER_SECTOR * SECTOR_PER_PAGE
 NUM_OF_QUEUES = 8
 VIRTUAL_DATA_ADDRESS = 0xFFFFFFFFFFFFFFFF
-GC_WL_MANAGER_FREE_BLOCK_POOL_THRESHOLD = 1
+GC_WL_MANAGER_FREE_BLOCK_POOL_THRESHOLD = 63
 
 debug_info = print
 
@@ -162,7 +162,7 @@ class ChipStatus(Enum):
 class Transaction:
     source_req: Optional[Request]
     type: TransactionType
-    lpa: int = -1 # register lpa if type is not TransactionType.MAPPING_...
+    lpa: int = -1 # register lpa if type is not TransactionType.MAPPING_..., 
     mvpn: int = -1 # register mvpn if type is TransactionType.MAPPING_...
     address: FlashAddress = field(default_factory=lambda: FlashAddress(channel=-1, chip=-1, die=-1, plane=-1, sub_plane=-1, page=-1))
     bitmap: list[int] = field(default_factory=list) # register lpa bitmap if type is TransactionType.MAPPING_..., else sector bitmap
@@ -170,7 +170,6 @@ class Transaction:
     required_by_transactions: list['Transaction'] = field(default_factory=list)
     completed: bool = False
     exec_event: Optional[SimEvent] = None
-    data_ready: bool = True
     payload: list[int] = field(default_factory=list) # register data if type is TransactionType.USER_..., else payload for mapping write
     response: Optional[list[int]] = None # register response data when necessary
     # GC: source physical page before migrate (for mapping / BKE invalidation)
@@ -198,7 +197,6 @@ class Transaction:
                     self.bitmap[i] = self.bitmap[i] or tr.bitmap[i]
                     if hasattr(pd, "data") and pd.data:
                         self.payload[i] = pd.data[i] if self.payload[i] is None else self.payload[i]
-            self.data_ready = True
         
         return
 
@@ -214,12 +212,13 @@ class Transaction:
         items = [
             f"type={self.type},",
             f"lpa={self.lpa},",
+            f"mvpn={self.mvpn},",
             f"address={repr(self.address)},",
-            f"data_ready={self.data_ready},",
             f"Transaction source_req={source_req_brief},",
             f"bitmap={repr(self.bitmap)},",
+            f"payload={repr(self.payload)},",
             f"response={repr(self.response)},",
-            f"rely_on_transactions={rely_on_transactions_brief},",
+            f"rely_on_transactions={repr(self.rely_on_transactions)},",
             f"required_by_transactions={required_by_transactions_brief},",
             f"completed={self.completed},",
             f"exec_event={repr(self.exec_event)}",

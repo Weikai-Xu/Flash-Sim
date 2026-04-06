@@ -3,8 +3,6 @@ from dataclasses import dataclass
 from collections import defaultdict
 from dataclasses import field
 from typing import Any
-from flash_sim.common import Transaction
-
 from .common import *
 from .PHY import PHY
 from . import utils
@@ -74,6 +72,8 @@ class PlaneBKE:
         self.free_page_count = PAGE_PER_BLOCK * BLOCK_PER_PLANE
         self.valid_page_count = 0
         self.invalid_page_count = 0
+        # GC：当前 plane 上正在擦除的目标 block（与 _gc 的 erase_target 一致）；GC_ERASE 完成后清除
+        self.gc_erase_barrier_block_id: int | None = None
 
 
 
@@ -102,7 +102,7 @@ class Block_Manager:
         self.pages_per_block = pages_per_block
         self._construction_valid = False
         self.lpa_protected_book = dict[int, Transaction]()
-        self.ppa_protected_book = dict[int, Transaction]()
+        self.mvpn_protected_book = dict[int, Transaction]()
         self.gc_wl_manager: GC_WL_Manager
         print("Initializing block keeping book...")
         # 结构为：channel -> chip -> die -> plane -> [blockBKE, ...]，与 address 前 5 维一致
@@ -133,9 +133,8 @@ class Block_Manager:
         plane_bke.free_page_count -= 1
         if bke.write_frontier == PAGE_PER_BLOCK:
             bke.write_frontier = 0
-            plane_bke.free_block_pool.pop(plane_bke.write_frontier_block)
+            plane_bke.free_block_pool.discard(plane_bke.write_frontier_block)
             plane_bke.write_frontier_block += 1
-        self.gc_wl_manager.check_gc()
         return FlashAddress(channel=channel_id, chip=chip_id, die=die_id, plane=plane_id, sub_plane=plane_bke.write_frontier_block, page=page_id)
 
     def allocate_gc_write_page(self, plane_address: FlashAddress, block_id: int) -> FlashAddress:
@@ -170,8 +169,10 @@ class Block_Manager:
         debug_info(f"[Block Manager] set_barrier: tr: {repr(tr)}")
         if tr.type in [TransactionType.USER_WRITE]:
             self.lpa_protected_book[tr.lpa] = tr
-        elif tr.type in [TransactionType.MAPPING_WRITE, TransactionType.GC_WRITE, TransactionType.GC_ERASE]:
-            self.ppa_protected_book[utils.translate_address_to_ppa(tr.address)] = tr
+        elif tr.type in [TransactionType.GC_WRITE, TransactionType.GC_ERASE]:
+            self.lpa_protected_book[tr.lpa] = tr
+        elif tr.type == TransactionType.MAPPING_WRITE:
+            self.mvpn_protected_book[tr.mvpn] = tr
         else:
             raise ValueError(f"[Block Manager] <_set_barrier> unknown transaction type: {tr.type}")
         
@@ -188,17 +189,17 @@ class Block_Manager:
             self._mark_valid(tr.address)
             self.gc_wl_manager.check_gc()
         elif tr.type == TransactionType.GC_WRITE:
-            self.ppa_protected_book.pop(utils.translate_address_to_ppa(tr.address)) if utils.translate_address_to_ppa(tr.address) in self.ppa_protected_book else None
+            self.lpa_protected_book.pop(tr.lpa) if tr.lpa in self.lpa_protected_book else None
             self.gc_wl_manager.address_mapping_unit.apply_gc_write_complete(tr)
         elif tr.type == TransactionType.MAPPING_WRITE:
-            self.ppa_protected_book.pop(utils.translate_address_to_ppa(tr.address)) if utils.translate_address_to_ppa(tr.address) in self.ppa_protected_book else None
+            self.mvpn_protected_book.pop(tr.mvpn) if tr.mvpn in self.mvpn_protected_book else None
         elif tr.type == TransactionType.GC_ERASE:
-            self.ppa_protected_book.pop(utils.translate_address_to_ppa(tr.address)) if utils.translate_address_to_ppa(tr.address) in self.ppa_protected_book else None
+            self.lpa_protected_book.pop(tr.lpa) if tr.lpa in self.lpa_protected_book else None
             self.finalize_gc_erase(tr.address)
 
     def get_block_bke(self, addr: FlashAddress) -> blockBKE:
         channel_id, chip_id, die_id, plane_id, block_id = addr.channel, addr.chip, addr.die, addr.plane, addr.sub_plane
-        return self.block_keeping_book[channel_id][chip_id][die_id][plane_id][block_id]
+        return self.block_keeping_book[channel_id][chip_id][die_id][plane_id].block_entries[block_id]
 
     def get_plane_bke(self, addr: FlashAddress) -> PlaneBKE:
         channel_id, chip_id, die_id, plane_id = addr.channel, addr.chip, addr.die, addr.plane
@@ -258,6 +259,7 @@ class Block_Manager:
         bke.wl_level += 1
         plane_bke.free_page_count += PAGE_PER_BLOCK
         plane_bke.free_block_pool.add(addr.sub_plane)
+        plane_bke.gc_erase_barrier_block_id = None
         phy = self.gc_wl_manager.tsu.phy
         if phy is not None:
             phy.clear_block_pages(addr)
@@ -301,21 +303,11 @@ class TSU:
         # self.phy.connect_channel_idle_signal(self._on_channel_idle)
         # self.phy.connect_chip_idle_signal(self._on_chip_idle)
         self._construction_valid: bool = False
-        self.barriered_trans = []
         print("TSU initialization complete.")
     
     def _removing_barrier(self, tr: Transaction):
-        self.Prepare_trans_submission()                 
-        # removing barrier set by tr
-        if tr.type in [TransactionType.USER_WRITE, TransactionType.MAPPING_WRITE, TransactionType.GC_WRITE, TransactionType.GC_ERASE]:
-            print(f"[TSU] <_removing_barrier> following tr is removing barrier: {repr(tr)}")
-            # 按 address 收集要提交的 transaction，再按 id 移除，避免 list.remove(tr) 触发
-            # Transaction.__eq__ 递归比较 rely_on_transactions/required_by_transactions 导致栈溢出
-            to_submit = [trans for trans in self.barriered_trans if trans.lpa == tr.lpa]
-            for trans in to_submit:
-                self.Submit_trans(trans)
-            ids_to_remove = {id(trans) for trans in to_submit}
-            self.barriered_trans = [trans for trans in self.barriered_trans if id(trans) not in ids_to_remove]
+        self.Prepare_trans_submission()
+        print(f"[TSU] <_removing_barrier> transaction serviced, reschedule: {repr(tr)}")
         self.Schedule()
         return
 
@@ -339,16 +331,37 @@ class TSU:
 
     def Submit_trans(self, trans: Transaction):
         """Endeque a transaction to the appropriate per-chip priority deque."""
-        if trans.lpa in self.block_manager.lpa_protected_book.keys() and self.block_manager.lpa_protected_book[trans.lpa] != trans:
-            debug_info(f"[TSU] <Submit_trans> facing barrier, lpa: {trans.lpa}, trans: {repr(trans)}")
-            return
-        if utils.translate_address_to_ppa(trans.address) in self.block_manager.ppa_protected_book.keys() and self.block_manager.ppa_protected_book[utils.translate_address_to_ppa(trans.address)] != trans:
-            debug_info(f"[TSU] <Submit_trans> facing barrier, address: {trans.address}, trans: {repr(trans)}")
-            return
         debug_info(f"[TSU] <Submit_trans> submitting trans: {repr(trans)}")
         channel = trans.address.channel
         chip    = trans.address.chip
         self.queues[channel][chip][trans.type].append(trans)
+
+    def _transaction_blocked_by_barrier(self, tr: Transaction) -> bool:
+        """Barrier 在下发 PHY 前检查：LPA/MVPN 与 GC erase_target 块上的 program 写。"""
+        bm = self.block_manager
+        book_lpa = bm.lpa_protected_book.get(tr.lpa)
+        if book_lpa is not None and book_lpa is not tr:
+            # GC 迁移：源块 GC_READ 与目的块 GC_WRITE 同 LPA；book 由 GC_WRITE 占位时仍须先下发 GC_READ
+            if tr.type == TransactionType.GC_READ and book_lpa.type == TransactionType.GC_WRITE:
+                pass
+            else:
+                return True
+        book_mvpn = bm.mvpn_protected_book.get(tr.mvpn)
+        if book_mvpn is not None and book_mvpn is not tr:
+            return True
+        if tr.type in (
+            TransactionType.USER_WRITE,
+            TransactionType.MAPPING_WRITE,
+            TransactionType.GC_WRITE,
+            TransactionType.USER_STATIC_WRITE,
+        ):
+            addr = tr.address
+            if addr.sub_plane >= 0:
+                plane_bke = bm.get_plane_bke(addr)
+                bid = plane_bke.gc_erase_barrier_block_id
+                if bid is not None and addr.sub_plane == bid:
+                    return True
+        return False
 
     def Schedule(self):
         """Close batch and, if all batches are closed, drive scheduling.
@@ -506,8 +519,7 @@ class TSU:
 
         if q1 is None:
             return False
-        self.issue_command(chip_id, q1, q2, suspension_required)
-        return True
+        return self.issue_command(chip_id, q1, q2, suspension_required)
 
     def try_write(self, chip_id) -> bool:
         """Try to issue a write command to the chip.
@@ -518,6 +530,7 @@ class TSU:
         chip_bke = self.phy.get_chip_bke(chip_id)
         chip_status = chip_bke.status
         suspension_required = False
+        debug_info(f"[TSU] <try_write> chip {chip_id} status: {chip_status}")
 
         if chip_status != ChipStatus.IDLE:
             if chip_status in (ChipStatus.WRITE, ChipStatus.GC_WRITE, ChipStatus.READ):
@@ -545,8 +558,7 @@ class TSU:
 
         if q1 is None:
             return False
-        self.issue_command(chip_id, q1, q2, suspension_required)
-        return True
+        return self.issue_command(chip_id, q1, q2, suspension_required)
 
     def try_erase(self, chip_id) -> bool:
         """Try to issue an erase command to the chip.
@@ -561,8 +573,7 @@ class TSU:
         q = self.queues[chip_id[0]][chip_id[1]].get(TransactionType.GC_ERASE)
         if not q:
             return False
-        self.issue_command(chip_id, q, None, False)
-        return True
+        return self.issue_command(chip_id, q, None, False)
 
     def try_compute(self, chip_id) -> bool:
         """Try to issue a compute command to the chip.
@@ -577,8 +588,7 @@ class TSU:
         q = self.queues[chip_id[0]][chip_id[1]].get(TransactionType.USER_COMPUTE)
         if not q:
             return False
-        self.issue_compute_command(chip_id, q)
-        return True
+        return self.issue_compute_command(chip_id, q)
 
     def try_search(self, chip_id) -> bool:
         """Try to issue a search command to the chip.
@@ -593,8 +603,7 @@ class TSU:
         q = self.queues[chip_id[0]][chip_id[1]].get(TransactionType.USER_SEARCH)
         if not q:
             return False
-        self.issue_search_command(chip_id, q)
-        return True
+        return self.issue_search_command(chip_id, q)
 
     def try_static_write(self, chip_id) -> bool:
         """Try to issue a static write command to the chip.
@@ -609,8 +618,7 @@ class TSU:
         q = self.queues[chip_id[0]][chip_id[1]].get(TransactionType.USER_STATIC_WRITE)
         if not q:
             return False
-        self.issue_static_write_command(chip_id, q)
-        return True
+        return self.issue_static_write_command(chip_id, q)
 
     # ── Command dispatch to PHY ───────────────────────────────────────────────
 
@@ -620,7 +628,7 @@ class TSU:
         q1: list,
         q2,
         suspension_required: bool,
-    ) -> None:
+    ) -> bool:
         """按 die 粒度选取满足 plane 并行条件的 transactions 并下发给 PHY。
 
         对标 TSU_Base::issue_command_to_chip()。
@@ -640,7 +648,7 @@ class TSU:
 
         start_die = q1[0].address.die
         start_page = q1[0].address.page
-
+        dispatched = False
         for _step in range(die_no):
             die_id = (start_die + _step) % die_no
             page_id = start_page if _step == 0 else None
@@ -651,8 +659,8 @@ class TSU:
                 if tr.rely_on_transactions:
                     print(f"[TSU] <issue_command> tr has rely_on_transactions, skipping {repr(tr)}")
                     continue
-                if not tr.data_ready and ("read" not in tr.type.value.lower()):
-                    print(f"[TSU] <issue_command> data not ready, skipping {repr(tr)}")
+                if self._transaction_blocked_by_barrier(tr):
+                    debug_info(f"[TSU] <issue_command> tr blocked by barrier, skipping {repr(tr)}")
                     continue
                 if tr.address.die != die_id:
                     continue
@@ -675,8 +683,8 @@ class TSU:
                     if tr.rely_on_transactions:
                         print(f"[TSU] <issue_command> tr has rely_on_transactions, skipping {repr(tr)}")
                         continue
-                    if not tr.data_ready and ("read" not in tr.type.value.lower()):
-                        print(f"[TSU] <issue_command> data not ready, skipping {repr(tr)}")
+                    if self._transaction_blocked_by_barrier(tr):
+                        debug_info(f"[TSU] <issue_command> tr blocked by barrier, skipping {repr(tr)}")
                         continue
                     if tr.address.die != die_id:
                         continue
@@ -695,6 +703,7 @@ class TSU:
                         break
 
             if dispatch_slots:
+                dispatched = True
                 print(f"[TSU] <issue_command> dispatching {len(dispatch_slots)} transactions to PHY")
                 for tr in dispatch_slots:
                     if tr in q1:
@@ -703,7 +712,7 @@ class TSU:
                         q2.remove(tr)
                 self.phy.send_command_to_chip(chip_id, dispatch_slots, suspension_required)
                 dispatch_slots = []
-        return
+        return dispatched
 
     def issue_search_command(self, chip_id, q: list) -> None:
         """按 die-plane 粒度选取 search transactions 并下发给 PHY。
@@ -720,7 +729,7 @@ class TSU:
         plane_no = PLANE_PER_DIE
 
         start_die = q[0].address.die
-
+        dispatched = False
         for _step in range(die_no):
             die_id = (start_die + _step) % die_no
             plane_vector = 0
@@ -730,8 +739,8 @@ class TSU:
                 if tr.rely_on_transactions:
                     debug_info(f"[TSU] <issue_search_command> tr has rely_on_transactions, skipping {repr(tr)}")
                     continue
-                if not tr.data_ready:
-                    debug_info(f"[TSU] <issue_search_command> data not ready, skipping {repr(tr)}")
+                if self._transaction_blocked_by_barrier(tr):
+                    debug_info(f"[TSU] <issue_search_command> tr blocked by barrier, skipping {repr(tr)}")
                     continue
                 if tr.address.die != die_id:
                     continue
@@ -750,8 +759,10 @@ class TSU:
                 for tr in dispatch_slots:
                     q.remove(tr)
                 self.phy.send_command_to_chip(chip_id, dispatch_slots, False)
+                dispatched = True
+        return dispatched
 
-    def issue_compute_command(self, chip_id, q: list):
+    def issue_compute_command(self, chip_id, q: list) -> bool:
         """按 die-plane 粒度选取 compute transactions 并下发给 PHY。
 
         Compute 地址最细粒度为 address[4]（sub_plane/操作单元），address[5] 恒为 0。
@@ -766,7 +777,7 @@ class TSU:
         max_per_plane = COMPUTE_MAX_PARALLEL_SL * SSL_PER_SL
 
         start_die = q[0].address.die
-
+        dispatched = False
         for _step in range(die_no):
             die_id = (start_die + _step) % die_no
             plane_count: dict = {}
@@ -778,8 +789,8 @@ class TSU:
                 if tr.rely_on_transactions:
                     debug_info(f"[TSU] <issue_compute_command> tr has rely_on_transactions, skipping {repr(tr)}")
                     continue
-                if not tr.data_ready:
-                    debug_info(f"[TSU] <issue_compute_command> data not ready, skipping {repr(tr)}")
+                if self._transaction_blocked_by_barrier(tr):
+                    debug_info(f"[TSU] <issue_compute_command> tr blocked by barrier, skipping {repr(tr)}")
                     continue
                 tr_plane = tr.address.plane
                 count = plane_count.get(tr_plane, 0)
@@ -793,8 +804,10 @@ class TSU:
                 for tr in dispatch_slots:
                     q.remove(tr)
                 self.phy.send_command_to_chip(chip_id, dispatch_slots, False)
+                dispatched = True
+        return dispatched
 
-    def issue_static_write_command(self, chip_id, q: list):
+    def issue_static_write_command(self, chip_id, q: list) -> bool:
         """按 die-plane 粒度选取 static write transactions 并下发给 PHY。
 
         Static write 地址最细粒度为 address[4]（sub_plane/操作单元），address[5] 恒为 0。
@@ -809,7 +822,7 @@ class TSU:
         plane_no = PLANE_PER_DIE
 
         start_die = q[0].address.die
-
+        dispatched = False
         for _step in range(die_no):
             die_id = (start_die + _step) % die_no
             plane_vector = 0
@@ -821,8 +834,8 @@ class TSU:
                 if tr.rely_on_transactions:
                     debug_info(f"[TSU] <issue_static_write_command> tr has rely_on_transactions, skipping {repr(tr)}")
                     continue
-                if not tr.data_ready:
-                    debug_info(f"[TSU] <issue_static_write_command> data not ready, skipping {repr(tr)}")
+                if self._transaction_blocked_by_barrier(tr):
+                    debug_info(f"[TSU] <issue_static_write_command> tr blocked by barrier, skipping {repr(tr)}")
                     continue
                 tr_plane = tr.address.plane
                 if plane_vector & (1 << tr_plane):
@@ -838,7 +851,8 @@ class TSU:
                 for tr in dispatch_slots:
                     q.remove(tr)
                 self.phy.send_command_to_chip(chip_id, dispatch_slots, False)   
-        return
+                dispatched = True
+        return dispatched
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def channel_is_busy(self, channel_id: int) -> bool:
@@ -1009,7 +1023,6 @@ class Address_Mapping_Unit:
                 page_address = self.get_plane_address_for_lpa(tr.lpa)
                 page_address = self.block_manager.get_write_frontier(page_address)
                 tr.address = page_address
-                self.block_manager._set_barrier(tr)
                 domain = self.domains[req.sq_id]
                 if not domain.cmt.is_cached(tr.lpa):
                     domain.cmt.add_entry(tr.lpa, page_address, dirty=True) # dirty is true because a write tr must update the ppa of a lpa
@@ -1098,7 +1111,6 @@ class Address_Mapping_Unit:
             type=TransactionType.MAPPING_READ,
             mvpn=mvpn,
             address=mapping_page_address,
-            data_ready=True,
             bitmap=access_bitmap
         )
         return read_tr
@@ -1139,7 +1151,9 @@ class Address_Mapping_Unit:
         old_addr = tr.gc_old_address
         new_addr = tr.address
         if old_addr is not None:
-            bm._mark_invalid(old_addr)
+            old_bke = bm.get_block_bke(old_addr)
+            if old_addr.page in old_bke.valid_pages:
+                bm._mark_invalid(old_addr)
         if self.cmt.is_cached(lpa):
             ent = self.cmt.cache[lpa]
             ent.address = new_addr
@@ -1159,13 +1173,14 @@ class GC_WL_Manager:
         pass
 
     def check_gc(self):
+        debug_info(f"[GC] <check_gc> checking gc")
         for channel in range(CHANNEL_NO):
             for chip in range(CHIP_PER_CHANNEL):
                 for die in range(DIE_PER_CHIP):
                     for plane in range(PLANE_PER_DIE):
-                        plane_bke = self.block_manager.get_plane_bke(FlashAddress(channel=channel, chip=chip, die=die, plane=plane, block=-1, page=-1))
+                        plane_bke = self.block_manager.get_plane_bke(FlashAddress(channel=channel, chip=chip, die=die, plane=plane, sub_plane=-1, page=-1))
                         if len(plane_bke.free_block_pool) <= GC_WL_MANAGER_FREE_BLOCK_POOL_THRESHOLD:
-                            self._trigger_gc(FlashAddress(channel=channel, chip=chip, die=die, plane=plane, block=-1, page=-1))
+                            self._trigger_gc(FlashAddress(channel=channel, chip=chip, die=die, plane=plane, sub_plane=-1, page=-1))
         pass
     
     def _trigger_gc(self, addr: FlashAddress):
@@ -1234,6 +1249,7 @@ class GC_WL_Manager:
             print(f"[GC] <_gc> migrating {n_valid} valid pages from block {erase_target} to block {dest_block}")
         ch, chip, die, pl = addr.channel, addr.chip, addr.die, addr.plane
         plane_addr = FlashAddress(channel=ch, chip=chip, die=die, plane=pl, sub_plane=-1, page=-1)
+        plane_bke.gc_erase_barrier_block_id = erase_target
         self.tsu.Prepare_trans_submission()
         gc_writes: list[Transaction] = []
         for page_id in pages_to_move:
@@ -1245,7 +1261,6 @@ class GC_WL_Manager:
                 type=TransactionType.GC_READ,
                 lpa=lpa,
                 address=src,
-                data_ready=True,
                 bitmap=sector_bitmap,
             )
             dst = self.block_manager.allocate_gc_write_page(plane_addr, dest_block)
@@ -1254,16 +1269,15 @@ class GC_WL_Manager:
                 type=TransactionType.GC_WRITE,
                 lpa=lpa,
                 address=dst,
-                bitmap=[0] * SECTOR_PER_PAGE,
+                bitmap=[1] * SECTOR_PER_PAGE,
                 payload=[None] * SECTOR_PER_PAGE,
-                data_ready=False,
                 gc_old_address=src,
             )
             gc_read.required_by_transactions.append(gc_write)
             gc_write.rely_on_transactions.append(gc_read)
-            self.block_manager._set_barrier(gc_write)
             self.tsu.Submit_trans(gc_read)
             self.tsu.Submit_trans(gc_write)
+            self.block_manager._set_barrier(gc_write)
             gc_writes.append(gc_write)
         erase_addr = FlashAddress(channel=ch, chip=chip, die=die, plane=pl, sub_plane=erase_target, page=0)
         gc_erase = Transaction(
@@ -1271,13 +1285,11 @@ class GC_WL_Manager:
             type=TransactionType.GC_ERASE,
             lpa=-1,
             address=erase_addr,
-            data_ready=True,
         )
         if gc_writes:
             for gw in gc_writes:
                 gw.required_by_transactions.append(gc_erase)
                 gc_erase.rely_on_transactions.append(gw)
-        self.block_manager._set_barrier(gc_erase)
         self.tsu.Submit_trans(gc_erase)
         self.tsu.Schedule()
 

@@ -286,6 +286,9 @@ class PHY():
 
         elif ev_type == EventType.PHY_ERASE_CMD_TRANSFERRED:
             # Cmd sent to chip; chip begins internal erase; release channel.
+            chip_bke = self.get_chip_bke(chip_id)
+            die_bke = chip_bke.get_die_bke(die_id)
+            channel_id = chip_id[0]
             chip_bke.status = ChipStatus.ERASE
             self._channel_busy[channel_id] = False
             finish = now + T_BERS
@@ -444,7 +447,7 @@ class PHY():
                     debug_info(f"[PHY] following tr completed: {tr}")
                     for required_by_tr in tr.required_by_transactions:
                         required_by_tr.rely_on_transactions.remove(tr) # remove reliance
-                        debug_info(f"[PHY] removing reliance by {required_by_tr}")
+                        debug_info(f"[PHY] removed reliance by {required_by_tr}")
                     self._broadcast_transaction_serviced(tr)
             die_bke.active_command = None
             chip_bke.No_of_active_dies -= 1
@@ -544,7 +547,7 @@ class PHY():
                 if tr.bitmap[i] == 1 and pagedata.valid_bitmap[i] == 0:
                     valid = False
                     break
-            if not valid:
+            if not valid and tr.type not in [TransactionType.GC_READ]:
                 raise ValueError(f"[PHY] <_read_from_storage> accessing invalid lpa in mapping page!")
         elif pagedata.function == PageType.USER:
             if pagedata.lpa is None:
@@ -554,7 +557,7 @@ class PHY():
                 if tr.bitmap[i] == 1 and pagedata.data[i] is None:
                     valid = False
                     break
-            if not valid:
+            if not valid and tr.type not in [TransactionType.GC_READ]:
                 raise ValueError(f"[PHY] <_read_from_storage> accessing invalid sector in user page!")
         return pagedata
 

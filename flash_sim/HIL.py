@@ -61,7 +61,7 @@ class HIL:
                 address = self.ftl.get_static_address(sub_plane_id)
                 lpa  = utils.translate_lha_to_lpa(sub_plane_id)
                 tr_type = TransactionType.USER_SEARCH if req.type == RequestType.SEARCH else TransactionType.USER_COMPUTE if req.type == RequestType.COMPUTE else TransactionType.USER_STATIC_WRITE if req.type == RequestType.STATIC_WRITE else None
-                tr = Transaction(source_req=req, type=tr_type, address=address, lpa=lpa, data_ready=False)
+                tr = Transaction(source_req=req, type=tr_type, address=address, lpa=lpa)
                 req.transaction_list.append(tr)
             return
 
@@ -83,7 +83,7 @@ class HIL:
                     tr_type = TransactionType.USER_WRITE
                 else:
                     raise ValueError(f"Invalid request type: {req.type}")
-                tr = Transaction(source_req=req, lpa=start_lpa, bitmap=bitmap, type=tr_type, data_ready=False if req.type == RequestType.WRITE else True)
+                tr = Transaction(source_req=req, lpa=start_lpa, bitmap=bitmap, type=tr_type)
                 req.transaction_list.append(tr)
                 return
             # access multiple pages
@@ -102,7 +102,7 @@ class HIL:
                     tr_type = TransactionType.USER_WRITE
                 else:
                     raise ValueError(f"Invalid request type: {req.type}")
-                tr = Transaction(source_req=req, lpa=lpa, bitmap=bitmap, type=tr_type, data_ready=False if req.type == RequestType.WRITE else True)
+                tr = Transaction(source_req=req, lpa=lpa, bitmap=bitmap, type=tr_type)
                 req.transaction_list.append(tr)
         else:
             raise ValueError("Unexpected req type!")
@@ -150,23 +150,29 @@ class HIL:
             self.ftl.handle_new_req(req)
         elif message.type in (MessageType.WRITE_REQ, MessageType.SEARCH_REQ, MessageType.COMPUTE_REQ, MessageType.STATIC_WRITE_REQ):
             req = message.payload["req"]
+            for tr in req.transaction_list:
+                self.block_manager._set_barrier(tr)
             self.fetch_data(req)
             self.segment(req)
-            self.ftl.handle_new_req(req)
         elif message.type in (MessageType.WRITE_DATA, MessageType.SEARCH_DATA, MessageType.COMPUTE_DATA, MessageType.STATIC_WRITE_DATA):
             req = message.payload["req"]
-            self.broadcast_data_ready_signal(req)
+            data = message.payload["data"]
             debug_info(f"[HIL] received data for req: {req}")
+            self._tile_data(req, data)
+            self.ftl.handle_new_req(req)
         else:
             raise ValueError(f"Unexpected message type for HIL: {message.type}")
 
-    def broadcast_data_ready_signal(self, req):
-        debug_info(f"[HIL] <broadcast_data_ready_signal> req: {req}")
-        self.ftl.tsu.Prepare_trans_submission()
+    def _tile_data(self, req, data):
+        debug_info(f"[HIL] <_tile_data> req: {req}, data: {data}")
+        cntr = 0
         for tr in req.transaction_list:
-            tr.data_ready = True
-        self.ftl.tsu.Schedule()
-        debug_info(f"[HIL] <broadcast_data_ready_signal> done")
+            payload = [None] * SECTOR_PER_PAGE
+            for i in range(SECTOR_PER_PAGE):
+                if tr.bitmap[i] == 1:
+                    payload[i] = data[cntr]
+                    cntr += 1
+            tr.payload = payload
 
 class Cache:
     def __init__(self, max_entries: int = 1024):

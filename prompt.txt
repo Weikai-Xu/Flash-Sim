@@ -1,6 +1,6 @@
-帮我在Flash-Sim项目中完成以下任务：
-1. 在./precondition/pre_trace.json文件中生成一个用于初始条件生成的trace，指令结构与parser中的COMMAND_SCHEMA相同，但是只包含write, read, static_write三种指令
-2. 在engine中写好precondition函数，读取pre_trace_path路径对应的文件，调用parser完成解析，并压入event_queue，scheduled_time均为0时刻
-3. 在engine中加入一个pre_sim属性，bool，在调用precondition函数完成pre_trace解析之后将其赋值为true，并调用Start_simulation()开始仿真
-4. 所有execute()函数中加入一个判断，当pre_sim为真时，登记事件的scheduled_time均为0
-5. 
+现在我需要修改@flash_sim/FTL.py 中设置barrier的逻辑，核心是我需要在收到每个WRITE_REQ和产生每个MAPPING_WRITE, GC_WRITE的时候将它们的target lpa设置成barrier状态，在每次产生GC操作的时候将erase_target_block设置成barriered状态。在每次issue_command时，需要判断transaction是否遇到了barrier，如果遇到了，该指令不可发送给flash phy
+
+目前需要修改的地方是：
+1. 修改Submit_trans函数，改为直接提交，不需要判断有没有被barrier
+2. 在block manager中增加一个给gc专门设置的barrier记录表，每次_gc函数运行时将target_erase_block设置成barrierd状态，任何访问该block的write操作不可以执行，等GC_ERASE完成之后解除barrier
+3. 在issue_command（包括issue_..._command）函数中加入对tr有没有遇到barrier的判断
