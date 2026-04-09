@@ -61,7 +61,7 @@ class HIL:
                 address = self.ftl.get_static_address(sub_plane_id)
                 lpa  = utils.translate_lha_to_lpa(sub_plane_id)
                 tr_type = TransactionType.USER_SEARCH if req.type == RequestType.SEARCH else TransactionType.USER_COMPUTE if req.type == RequestType.COMPUTE else TransactionType.USER_STATIC_WRITE if req.type == RequestType.STATIC_WRITE else None
-                tr = Transaction(source_req=req, type=tr_type, address=address, lpa=lpa)
+                tr = Transaction(source_req=req, type=tr_type, address=address, lpa=lpa, data_ready=True if req.type == RequestType.SEARCH else False)
                 req.transaction_list.append(tr)
             return
 
@@ -83,7 +83,7 @@ class HIL:
                     tr_type = TransactionType.USER_WRITE
                 else:
                     raise ValueError(f"Invalid request type: {req.type}")
-                tr = Transaction(source_req=req, lpa=start_lpa, bitmap=bitmap, type=tr_type)
+                tr = Transaction(source_req=req, lpa=start_lpa, bitmap=bitmap, type=tr_type, data_ready=True if req.type == RequestType.READ else False)
                 req.transaction_list.append(tr)
                 return
             # access multiple pages
@@ -102,7 +102,7 @@ class HIL:
                     tr_type = TransactionType.USER_WRITE
                 else:
                     raise ValueError(f"Invalid request type: {req.type}")
-                tr = Transaction(source_req=req, lpa=lpa, bitmap=bitmap, type=tr_type)
+                tr = Transaction(source_req=req, lpa=lpa, bitmap=bitmap, type=tr_type, data_ready=True if req.type == RequestType.READ else False)
                 req.transaction_list.append(tr)
         else:
             raise ValueError("Unexpected req type!")
@@ -154,12 +154,16 @@ class HIL:
                 self.block_manager._set_barrier(tr)
             self.fetch_data(req)
             self.segment(req)
+            self.ftl.handle_new_req(req)
         elif message.type in (MessageType.WRITE_DATA, MessageType.SEARCH_DATA, MessageType.COMPUTE_DATA, MessageType.STATIC_WRITE_DATA):
             req = message.payload["req"]
             data = message.payload["data"]
             debug_info(f"[HIL] received data for req: {req}")
             self._tile_data(req, data)
-            self.ftl.handle_new_req(req)
+            for tr in req.transaction_list:
+                tr.data_ready = True
+            self.ftl.tsu.Prepare_trans_submission()
+            self.ftl.tsu.Schedule()
         else:
             raise ValueError(f"Unexpected message type for HIL: {message.type}")
 

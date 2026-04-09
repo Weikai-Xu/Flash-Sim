@@ -74,6 +74,8 @@ class Engine:
                 data_address=cmd.get("data_address"),
                 data_size=cmd.get("data_size"),
             )
+            if cmd.get("invalidate") == 1: # for invalidative write
+                req.invalidate = True
             self.Register_event(EventType.REQ_INIT, self.host, {"req": req}, scheduled_time)
     
     def precondition(self, pre_trace_path):

@@ -19,7 +19,7 @@ class Device:
         self.phy.connect_transaction_serviced_signal(self.hil._on_transaction_serviced)
         self.phy.connect_transaction_serviced_signal(self.ftl.address_mapping_unit._handle_mapping_response)
         self.phy.connect_transaction_serviced_signal(self.ftl.block_manager._on_transaction_serviced)
-        self.phy.connect_transaction_serviced_signal(self.ftl.tsu._removing_barrier)
+        self.phy.connect_transaction_serviced_signal(self.ftl.tsu._reschedule)
 
     def execute(self, event):
         # from .common import log_execute_event

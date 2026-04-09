@@ -554,10 +554,10 @@ class PHY():
                 raise ValueError(f"[PHY] <_read_from_storage> accessing invalid user page!")
             valid = True
             for i in range(SECTOR_PER_PAGE):
-                if tr.bitmap[i] == 1 and pagedata.data[i] is None:
+                if tr.type not in [TransactionType.GC_READ] and tr.bitmap[i] == 1 and pagedata.data[i] is None:
                     valid = False
                     break
-            if not valid and tr.type not in [TransactionType.GC_READ]:
+            if not valid:
                 raise ValueError(f"[PHY] <_read_from_storage> accessing invalid sector in user page!")
         return pagedata
 

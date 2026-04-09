@@ -9,8 +9,8 @@
     },
     {
         "type": "write",
-        "time": 0,
-        "start_lha": 64,
+        "time": 50,
+        "start_lha": 0,
         "size": 1,
         "data_address": -1,
         "data_size": 1

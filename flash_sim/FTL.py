@@ -24,6 +24,7 @@ class CMT:
     def update_entry(self, lpa: int, address: FlashAddress, dirty: bool):
         entry = self.cache[lpa]
         entry.address = address
+        debug_info(f"[CMT] <add_entry> updating entry: ({lpa}, {repr(entry)})")
         if entry.dirty != dirty:
             self.address_mapping_unit.gc_wl_manager._mark_invalid(address)
         entry.dirty = dirty
@@ -126,16 +127,20 @@ class Block_Manager:
         die_id = plane_address.die
         plane_id = plane_address.plane
         plane_bke = self.block_keeping_book[channel_id][chip_id][die_id][plane_id]
-        bke = plane_bke.block_entries[plane_bke.write_frontier_block]
+        block_id = plane_bke.write_frontier_block
+        bke = plane_bke.block_entries[block_id]
         page_id = bke.write_frontier
+        debug_info(f"[Block Manager] <get_write_frontier> plane_address: {plane_address}, block {block_id}, page: {page_id}")
         bke.write_frontier += 1
         bke.free_page_count -= 1                # free page count is subtracted immediately when issue an write transaction
         plane_bke.free_page_count -= 1
         if bke.write_frontier == PAGE_PER_BLOCK:
             bke.write_frontier = 0
-            plane_bke.free_block_pool.discard(plane_bke.write_frontier_block)
+            plane_bke.free_block_pool.discard(block_id)
             plane_bke.write_frontier_block += 1
-        return FlashAddress(channel=channel_id, chip=chip_id, die=die_id, plane=plane_id, sub_plane=plane_bke.write_frontier_block, page=page_id)
+            if plane_bke.write_frontier_block == BLOCK_PER_PLANE:
+                raise ValueError(f"[Block Manager] <get_write_frontier> plane {plane_id} is full, write frontier block overflow")
+        return FlashAddress(channel=channel_id, chip=chip_id, die=die_id, plane=plane_id, sub_plane=block_id, page=page_id)
 
     def allocate_gc_write_page(self, plane_address: FlashAddress, block_id: int) -> FlashAddress:
         """Allocate a page within a specific block (for GC migration target)."""
@@ -166,10 +171,10 @@ class Block_Manager:
         )
     
     def _set_barrier(self, tr: Transaction):
-        debug_info(f"[Block Manager] set_barrier: tr: {repr(tr)}")
+        debug_info(f"[Block Manager] <_set_barrier> setting barrier for tr: {repr(tr)}")
         if tr.type in [TransactionType.USER_WRITE]:
             self.lpa_protected_book[tr.lpa] = tr
-        elif tr.type in [TransactionType.GC_WRITE, TransactionType.GC_ERASE]:
+        elif tr.type in [TransactionType.GC_WRITE]:
             self.lpa_protected_book[tr.lpa] = tr
         elif tr.type == TransactionType.MAPPING_WRITE:
             self.mvpn_protected_book[tr.mvpn] = tr
@@ -305,9 +310,9 @@ class TSU:
         self._construction_valid: bool = False
         print("TSU initialization complete.")
     
-    def _removing_barrier(self, tr: Transaction):
+    def _reschedule(self, tr: Transaction):
         self.Prepare_trans_submission()
-        print(f"[TSU] <_removing_barrier> transaction serviced, reschedule: {repr(tr)}")
+        print(f"[TSU] <_reschedule> transaction serviced, rescheduling: {repr(tr)}")
         self.Schedule()
         return
 
@@ -659,6 +664,9 @@ class TSU:
                 if tr.rely_on_transactions:
                     print(f"[TSU] <issue_command> tr has rely_on_transactions, skipping {repr(tr)}")
                     continue
+                if not tr.data_ready:
+                    print(f"[TSU] <issue_command> tr data not ready, skipping {repr(tr)}")
+                    continue
                 if self._transaction_blocked_by_barrier(tr):
                     debug_info(f"[TSU] <issue_command> tr blocked by barrier, skipping {repr(tr)}")
                     continue
@@ -682,6 +690,9 @@ class TSU:
                 for tr in list(q2):
                     if tr.rely_on_transactions:
                         print(f"[TSU] <issue_command> tr has rely_on_transactions, skipping {repr(tr)}")
+                        continue
+                    if not tr.data_ready:
+                        print(f"[TSU] <issue_command> tr data not ready, skipping {repr(tr)}")
                         continue
                     if self._transaction_blocked_by_barrier(tr):
                         debug_info(f"[TSU] <issue_command> tr blocked by barrier, skipping {repr(tr)}")
@@ -739,6 +750,9 @@ class TSU:
                 if tr.rely_on_transactions:
                     debug_info(f"[TSU] <issue_search_command> tr has rely_on_transactions, skipping {repr(tr)}")
                     continue
+                if not tr.data_ready:
+                    print(f"[TSU] <issue_search_command> tr data not ready, skipping {repr(tr)}")
+                    continue
                 if self._transaction_blocked_by_barrier(tr):
                     debug_info(f"[TSU] <issue_search_command> tr blocked by barrier, skipping {repr(tr)}")
                     continue
@@ -789,6 +803,9 @@ class TSU:
                 if tr.rely_on_transactions:
                     debug_info(f"[TSU] <issue_compute_command> tr has rely_on_transactions, skipping {repr(tr)}")
                     continue
+                if not tr.data_ready:
+                    print(f"[TSU] <issue_compute_command> tr data not ready, skipping {repr(tr)}")
+                    continue
                 if self._transaction_blocked_by_barrier(tr):
                     debug_info(f"[TSU] <issue_compute_command> tr blocked by barrier, skipping {repr(tr)}")
                     continue
@@ -833,6 +850,9 @@ class TSU:
                     continue
                 if tr.rely_on_transactions:
                     debug_info(f"[TSU] <issue_static_write_command> tr has rely_on_transactions, skipping {repr(tr)}")
+                    continue
+                if not tr.data_ready:
+                    print(f"[TSU] <issue_static_write_command> tr data not ready, skipping {repr(tr)}")
                     continue
                 if self._transaction_blocked_by_barrier(tr):
                     debug_info(f"[TSU] <issue_static_write_command> tr blocked by barrier, skipping {repr(tr)}")
@@ -1029,6 +1049,7 @@ class Address_Mapping_Unit:
                 else:
                     domain.cmt.update_entry(tr.lpa, page_address, dirty=True)
                 self.tsu.Submit_trans(tr)
+                self.block_manager._set_barrier(tr)
         # process search and compute requests, whose transaction ppa is decided in segment step
         elif req.type == RequestType.SEARCH:
             assert req.transaction_list is not None, "Search request transaction list is not set"
@@ -1038,6 +1059,11 @@ class Address_Mapping_Unit:
             assert req.transaction_list is not None, "Compute request transaction list is not set"
             for tr in req.transaction_list:
                 self.tsu.Submit_trans(tr)
+        elif req.type == RequestType.STATIC_WRITE:
+            assert req.transaction_list is not None, "Static write request transaction list is not set"
+            for tr in req.transaction_list:
+                self.tsu.Submit_trans(tr)
+                self.block_manager._set_barrier(tr)
         else:
             raise ValueError("Invalid request type for translate_and_submit")
         print("[AMU] <translate_and_submit> Prepare trans submission complete")
@@ -1072,7 +1098,8 @@ class Address_Mapping_Unit:
                 mvpn=mvpn,
                 address=page_address,
                 payload=data,
-                bitmap=bitmap
+                bitmap=bitmap,
+                data_ready=True
             )
             self.tsu.Submit_trans(write_tr)
             self.block_manager._set_barrier(write_tr)
@@ -1084,7 +1111,8 @@ class Address_Mapping_Unit:
                 mvpn=mvpn,
                 address=gtd_entry.address,
                 payload=data,
-                bitmap=bitmap
+                bitmap=bitmap,
+                data_ready=True
             )
             need_read = False
             for i in range(LPA_NO_PER_MAPPING_PAGE):
@@ -1184,7 +1212,7 @@ class GC_WL_Manager:
         pass
     
     def _trigger_gc(self, addr: FlashAddress):
-        print(f"[GC] trigger gc for plane: {addr}")
+        print(f"[GC] <trigger_gc> for plane: {addr}")
         plane_bke = self.block_manager.get_plane_bke(addr)
         max_invalid_page_count = 0
         max_invalid_page_count_block = -1

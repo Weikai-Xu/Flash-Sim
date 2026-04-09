@@ -121,7 +121,7 @@ LPA_NO_PER_SECTOR = 4
 LPA_NO_PER_MAPPING_PAGE = LPA_NO_PER_SECTOR * SECTOR_PER_PAGE
 NUM_OF_QUEUES = 8
 VIRTUAL_DATA_ADDRESS = 0xFFFFFFFFFFFFFFFF
-GC_WL_MANAGER_FREE_BLOCK_POOL_THRESHOLD = 63
+GC_WL_MANAGER_FREE_BLOCK_POOL_THRESHOLD = 62
 
 debug_info = print
 
@@ -169,11 +169,13 @@ class Transaction:
     rely_on_transactions: list['Transaction'] = field(default_factory=list)
     required_by_transactions: list['Transaction'] = field(default_factory=list)
     completed: bool = False
+    data_ready: bool = True
     exec_event: Optional[SimEvent] = None
     payload: list[int] = field(default_factory=list) # register data if type is TransactionType.USER_..., else payload for mapping write
     response: Optional[list[int]] = None # register response data when necessary
     # GC: source physical page before migrate (for mapping / BKE invalidation)
     gc_old_address: Optional[FlashAddress] = field(default=None)
+    invalidate: Optional[bool] = True
 
     def get_response_from_transaction(self, tr: 'Transaction'):
         if self.type == TransactionType.MAPPING_WRITE and tr.type == TransactionType.MAPPING_READ:
@@ -252,6 +254,7 @@ class Request:
     issue_time: Optional[int] = None
     finish_time: Optional[int] = None
     status: Optional[str] = None
+    invalidate: Optional[bool] = False
 
     def is_serviced(self) -> bool:
         """是否所有 transaction 已处理完成。"""
