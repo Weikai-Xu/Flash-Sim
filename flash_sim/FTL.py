@@ -23,10 +23,12 @@ class CMT:
 
     def update_entry(self, lpa: int, address: FlashAddress, dirty: bool):
         entry = self.cache[lpa]
+        plane_bke = self.address_mapping_unit.block_manager.block_keeping_book[address.channel][address.chip][address.die][address.plane]
+        bke = plane_bke.block_entries[address.sub_plane]
+        if dirty and address.page in bke.valid_pages:
+            self.address_mapping_unit.block_manager._mark_invalid(entry.address)
         entry.address = address
         debug_info(f"[CMT] <add_entry> updating entry: ({lpa}, {repr(entry)})")
-        if entry.dirty != dirty:
-            self.address_mapping_unit.gc_wl_manager._mark_invalid(address)
         entry.dirty = dirty
         self.lru_list.remove(lpa)
         self.lru_list.insert(0, lpa)
@@ -173,11 +175,14 @@ class Block_Manager:
     def _set_barrier(self, tr: Transaction):
         debug_info(f"[Block Manager] <_set_barrier> setting barrier for tr: {repr(tr)}")
         if tr.type in [TransactionType.USER_WRITE]:
-            self.lpa_protected_book[tr.lpa] = tr
+            if tr.lpa not in self.lpa_protected_book:
+                self.lpa_protected_book[tr.lpa] = tr
         elif tr.type in [TransactionType.GC_WRITE]:
-            self.lpa_protected_book[tr.lpa] = tr
+            if tr.lpa not in self.lpa_protected_book:
+                self.lpa_protected_book[tr.lpa] = tr
         elif tr.type == TransactionType.MAPPING_WRITE:
-            self.mvpn_protected_book[tr.mvpn] = tr
+            if tr.mvpn not in self.mvpn_protected_book:
+                self.mvpn_protected_book[tr.mvpn] = tr
         else:
             raise ValueError(f"[Block Manager] <_set_barrier> unknown transaction type: {tr.type}")
         
@@ -220,6 +225,7 @@ class Block_Manager:
         return bke.page_protected[addr.page]
     
     def _mark_valid(self, addr: FlashAddress):
+        debug_info(f"[Block Manager] <_mark_valid> {addr}")
         bke = self.get_block_bke(addr)
         plane_bke = self.get_plane_bke(addr)
 
@@ -228,6 +234,7 @@ class Block_Manager:
         plane_bke.valid_page_count += 1
 
     def _mark_invalid(self, addr: FlashAddress):
+        debug_info(f"[Block Manager] <_mark_invalid> {addr}")
         bke = self.get_block_bke(addr)
         if addr.page not in bke.valid_pages:
             raise ValueError(f"[Block Manager] <_mark_invalid> address {addr} is not valid!")
