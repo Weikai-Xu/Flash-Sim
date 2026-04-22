@@ -124,7 +124,7 @@ LPA_NO_PER_SECTOR = 4
 LPA_NO_PER_MAPPING_PAGE = LPA_NO_PER_SECTOR * SECTOR_PER_PAGE
 NUM_OF_QUEUES = 8
 VIRTUAL_DATA_ADDRESS = 0xFFFFFFFFFFFFFFFF
-GC_WL_MANAGER_FREE_BLOCK_POOL_THRESHOLD = 62
+GC_WL_MANAGER_FREE_BLOCK_POOL_THRESHOLD = 63
 
 # debug_info = print
 def debug_info(*args, **kwargs):
@@ -180,7 +180,7 @@ class Transaction:
     response: Optional[list[int]] = None # register response data when necessary
     # GC: source physical page before migrate (for mapping / BKE invalidation)
     gc_old_address: Optional[FlashAddress] = field(default=None)
-    invalidate: Optional[bool] = True
+    invalidate_target: Optional[FlashAddress] = field(default=None)
 
     def get_response_from_transaction(self, tr: 'Transaction'):
         if self.type == TransactionType.MAPPING_WRITE and tr.type == TransactionType.MAPPING_READ:

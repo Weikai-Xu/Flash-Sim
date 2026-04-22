@@ -118,14 +118,17 @@ class FlashGeometry:
     blocks_per_plane: int = 64         # use a small number for debugging
     # ----- Block 内层次 -----
     layers_per_block: int = 1        # Number of layers (WL)
-    sl_per_block: int = 2              # Sub-block level per block
-    ssl_per_sl: int = 4                # Sub-sub-block per SL
+    sl_per_block: int = 1              # Sub-block level per block
+    ssl_per_sl: int = 2                # Sub-sub-block per SL
     sub_blocks_per_block: int = 2      # = sl_per_block * ssl_per_sl
     sector_per_page: int = 16
     # ----- 计算/搜索并行与 Bank -----
     compute_max_parallel_sl: int = 256
     search_max_parallel_wl: int = 256
     static_chip_per_channel: int = 1
+    
+    # ----- Preconditioning 参数 -----
+    valid_invalid_ratio: float = 0.5  # 已写满 block 中 valid_page 与 invalid_page 的比例（0.0 ~ 1.0）
 
     def __post_init__(self):
         if self.layers_per_block <= 0:

@@ -80,9 +80,6 @@ class Engine:
                 req.invalidate = True
             self.Register_event(EventType.REQ_INIT, self.host, {"req": req}, scheduled_time)
     
-    def precondition(self, pre_trace_path):
-        pass
-    
     def Validate_construction(self):
         if self._construction_valid:
             return
@@ -96,9 +93,10 @@ class Engine:
         self._construction_valid = True
         print("Construction validation complete.") 
 
-    def Start_simulation(self, trace_path, pre_trace_path):
+    def Start_simulation(self, trace_path):
         self.Validate_construction()
-        self.precondition(pre_trace_path)
+        # 在 validation 之后执行 preconditioning 阶段
+        self.device.ftl.block_manager.preconditioning()
         self.Initialize_event_queue(trace_path)
         print("Event queue initialization complete.\n\n")
         print(format_event_queue(self.event_queue.queue))

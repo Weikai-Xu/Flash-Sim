@@ -1,0 +1,8 @@
+# Block Manager添加preconditioning模块
+
+请帮我在Block Manager中加一个preconditioning函数，在engine完成initialize和validation之后，跑一个preconditioning阶段，该阶段内对Block Manager内部的plane_bke, block_bke进行赋初值，具体规则如下：
+1. 对于static_chip，不进行赋值操作；对于其它chip，赋值时每个对每个die内的每个plane进行循环，每个plane进行一遍赋值操作
+2. 对每个plane进行的赋值操作中，需要根据common.py和config.py文件中对FlashGeometry的规定，随机抽取GC_WL_MANAGER_FREE_BLOCK_POOL_THRESHOLD个block，这些block必须是全部为free_page的；其它block中，选取1个block作为这个plane的write_frontier_block，并随机生成一个 `0 < write_frontier < page_per_block`，作为这个block的write_frontier
+3. 此时剩余的所有block都是全部写满的，即free_pages应该是一个空的set。设置一个可配置参数，为已经写满的block中invalid_page和valid_page的比例，按照这个比例随机将这些block中的page赋值成valid和invalid
+
+__构造agent来完成上述任务，要求至少构建两个智能体，一个负责coding，一个负责verification__
