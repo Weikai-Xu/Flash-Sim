@@ -5,7 +5,7 @@ from dataclasses import field
 from typing import Any
 import random
 from .common import *
-from .PHY import PHY
+from .PHY import PHY, PageType
 from . import utils
 
 class CMT:
@@ -277,16 +277,15 @@ class Block_Manager:
 
     def preconditioning(self, data_path: str = None, phy=None, amu=None) -> None:
         """
-        预处理阶段：根据 precondition_data.json 初始化 Block Manager 与 PHY 存储。
-
-        规则：
-        1. static_chip 跳过
-        2. 读取 JSON，按 LPA->plane 分组
-        3. 对每个 plane 计算 num_full_block，选出 full block，写入 PHY 数据和 AMU 映射
-        4. 处理 write_frontier_block 的剩余页
+        严格区分 user page 和 mapping page，分两阶段：
+        1. user page 赋值（plane分组，排除mapping区域）
+        2. user page 映射写入mapping page（直接写PHY._storage，PageData.function=MAPPING，mvpn）
+        3. 随机选取部分user lpa-ppa预热CMT
+        4. 所有mvpn-ppa映射写入gtd
         """
         import json
         import os
+        import random
         from collections import defaultdict
 
         if data_path is None:
@@ -297,7 +296,6 @@ class Block_Manager:
         print("[Block Manager] Starting preconditioning phase (data-driven)...")
         print(f"[Block Manager] Loading precondition data from: {data_path}")
         print("=" * 80)
-
         with open(data_path, 'r') as f:
             precondition_data = json.load(f)
 
@@ -312,30 +310,36 @@ class Block_Manager:
                 amu = self.gc_wl_manager.address_mapping_unit
             except AttributeError:
                 amu = None
+        if amu is None:
+            raise RuntimeError("[Block Manager] preconditioning: AMU (address_mapping_unit) is required!")
 
-        # 读取 valid_invalid_ratio
-        try:
-            from .config import FlashGeometry
-            geometry = FlashGeometry()
-            valid_invalid_ratio = geometry.valid_invalid_ratio
-        except Exception:
-            valid_invalid_ratio = 0.5
+        # 读取 geometry
+        from .config import FlashGeometry
+        geometry = FlashGeometry()
+        valid_invalid_ratio = geometry.valid_invalid_ratio
+        cmt_capacity = CMT_SIZE
+        cmt_ratio = getattr(geometry, "preconditioning_cmt_ratio", 0.5)
         if not (0.0 < valid_invalid_ratio <= 1.0):
             valid_invalid_ratio = 0.5
+        if not (0.0 < cmt_ratio <= 1.0):
+            cmt_ratio = 0.5
 
-        # 按 plane 地址分组 page data
-        pages_per_plane = self.block_no_per_plane * self.pages_per_block
+        # 1. user page赋值（plane分组，排除mapping区域）
+        user_lpa_set = set()
+        user_lpa_to_ppa = dict()  # lpa -> FlashAddress
+        lpa_item_map = {item['lpa']: item for item in precondition_data}
+        # 只分配user page区域
+        for lpa in lpa_item_map:
+            try:
+                addr = amu.get_plane_address_for_lpa(lpa)
+            except Exception:
+                continue  # 跳过mapping page区域
+            user_lpa_set.add(lpa)
+        # plane分组
         plane_page_data = defaultdict(list)
-        for item in precondition_data:
-            lpa = item['lpa']
-            lpa_high = lpa // pages_per_plane
-            pid = lpa_high % self.plane_no_per_die
-            lpa_high //= self.plane_no_per_die
-            did = lpa_high % self.die_no_per_chip
-            lpa_high //= self.die_no_per_chip
-            cid = lpa_high % self.chip_no_per_channel
-            chid = lpa_high // self.chip_no_per_channel
-            plane_page_data[(chid, cid, did, pid)].append(item)
+        for lpa in user_lpa_set:
+            addr = amu.get_plane_address_for_lpa(lpa)
+            plane_page_data[(addr.channel, addr.chip, addr.die, addr.plane)].append(lpa)
 
         for channel_id in range(self.channel_no):
             for chip_id in range(self.chip_no_per_channel):
@@ -344,11 +348,43 @@ class Block_Manager:
                     continue
                 for die_id in range(self.die_no_per_chip):
                     for plane_id in range(self.plane_no_per_die):
-                        items = plane_page_data.get((channel_id, chip_id, die_id, plane_id), [])
+                        lpas = plane_page_data.get((channel_id, chip_id, die_id, plane_id), [])
+                        items = [lpa_item_map[lpa] for lpa in lpas]
+                        # 只传入user page
                         self._precondition_plane_from_data(
                             channel_id, chip_id, die_id, plane_id,
-                            items, valid_invalid_ratio, phy, amu
+                            items, valid_invalid_ratio, phy, amu, user_lpa_to_ppa
                         )
+
+        # 2. user page映射写入mapping page（直接写PHY._storage，PageData.function=MAPPING，mvpn）
+        # 按mvpn分组
+        mvpn_to_lpas = defaultdict(list)
+        for lpa, ppa in user_lpa_to_ppa.items():
+            mvpn = lpa // LPA_NO_PER_MAPPING_PAGE
+            mvpn_to_lpas[mvpn].append((lpa, ppa))
+        for mvpn, lpa_ppa_list in mvpn_to_lpas.items():
+            mapping_addr = amu.get_plane_address_for_mvpn(mvpn)
+            # 写入PHY._storage
+            if phy is not None:
+                pd = phy._storage[mapping_addr.channel][mapping_addr.chip][mapping_addr.die][mapping_addr.plane][mapping_addr.sub_plane][mapping_addr.page]
+                pd.function = PageType.MAPPING
+                pd.mvpn = mvpn
+                pd.valid_bitmap = [0] * LPA_NO_PER_MAPPING_PAGE
+                pd.data = [None] * LPA_NO_PER_MAPPING_PAGE
+                for lpa, ppa in lpa_ppa_list:
+                    idx = lpa % LPA_NO_PER_MAPPING_PAGE
+                    pd.valid_bitmap[idx] = 1
+                    pd.data[idx] = ppa
+            # 写入gtd
+            amu.gtd[mvpn] = GTDEntry(address=mapping_addr)
+
+        # 3. 随机选取部分user lpa-ppa预热CMT
+        user_lpa_list = list(user_lpa_to_ppa.keys())
+        random.shuffle(user_lpa_list)
+        cmt_num = int(cmt_capacity * cmt_ratio)
+        for lpa in user_lpa_list[:cmt_num]:
+            addr = user_lpa_to_ppa[lpa]
+            amu.cmt.add_entry(lpa, addr, dirty=False)
 
         print("[Block Manager] Preconditioning phase completed.")
         print("=" * 80 + "\n")
@@ -360,7 +396,7 @@ class Block_Manager:
     def _precondition_plane_from_data(
         self,
         channel_id: int, chip_id: int, die_id: int, plane_id: int,
-        items: list, valid_invalid_ratio: float, phy, amu
+        items: list, valid_invalid_ratio: float, phy, amu, user_lpa_to_ppa=None
     ) -> None:
         """
         对单个 plane 进行数据驱动的预处理。
@@ -371,7 +407,6 @@ class Block_Manager:
         - amu: Address_Mapping_Unit 对象（写 gmt），可为 None（测试时跳过）
         """
         plane_bke = self.block_keeping_book[channel_id][chip_id][die_id][plane_id]
-
         # 重置 plane 状态
         plane_bke.block_entries = [blockBKE() for _ in range(self.block_no_per_plane)]
         plane_bke.write_frontier_block = 0
@@ -379,15 +414,13 @@ class Block_Manager:
         plane_bke.free_page_count = self.pages_per_block * self.block_no_per_plane
         plane_bke.valid_page_count = 0
         plane_bke.invalid_page_count = 0
-
         num_page = len(items)
-        # 每个 full block 中的 valid page 数
+        if num_page == 0:
+            return
         valid_per_full_block = max(1, int(self.pages_per_block * valid_invalid_ratio))
         num_invalid_per_full = self.pages_per_block - valid_per_full_block
-
         num_full_block = num_page // valid_per_full_block
-        left_page = num_page % valid_per_full_block  # 放入 write_frontier_block 的剩余 valid page 数
-
+        left_page = num_page % valid_per_full_block
         # Overfull 检查：full block + GC 阈值不能 >= block_per_plane（还需留 write_frontier_block）
         if num_full_block + GC_WL_MANAGER_FREE_BLOCK_POOL_THRESHOLD >= self.block_no_per_plane:
             raise ValueError(
@@ -397,38 +430,26 @@ class Block_Manager:
                 f"block_per_plane={self.block_no_per_plane}. "
                 f"Reduce num_data in precondition_data.json."
             )
-
         all_blocks = list(range(self.block_no_per_plane))
-
-        # 随机选 num_full_block 个 block 作为 full block
         full_blocks = set(random.sample(all_blocks, num_full_block)) if num_full_block > 0 else set()
         remaining_blocks = set(all_blocks) - full_blocks
-
-        # 从剩余 block 中随机选一个作为 write_frontier_block
         write_frontier_block_id = random.choice(list(remaining_blocks))
         remaining_blocks.remove(write_frontier_block_id)
-
-        # 剩余 block 全部进入 free_block_pool
         plane_bke.free_block_pool = remaining_blocks.copy()
         plane_bke.write_frontier_block = write_frontier_block_id
-
-        # 处理 full block：随机分配 valid/invalid page 位置，写入 PHY 和 AMU
         data_idx = 0
         for block_id in full_blocks:
             bke = plane_bke.block_entries[block_id]
             bke.write_frontier = self.pages_per_block
             bke.free_page_count = 0
-
             all_pages = list(range(self.pages_per_block))
             random.shuffle(all_pages)
             valid_positions = all_pages[:valid_per_full_block]
             invalid_positions = all_pages[valid_per_full_block:]
-
             bke.valid_pages = set(valid_positions)
             bke.valid_page_count = valid_per_full_block
             bke.invalid_pages = set(invalid_positions)
             bke.invalid_page_count = num_invalid_per_full
-
             for page_idx in valid_positions:
                 item = items[data_idx]
                 data_idx += 1
@@ -438,34 +459,29 @@ class Block_Manager:
                     pd.lpa = lpa
                     pd.valid_bitmap = item.get('valid_bitmap', [])
                     pd.data = item.get('data', [])
-                if amu is not None:
+                    pd.function = PageType.USER
+                if user_lpa_to_ppa is not None:
                     addr = FlashAddress(
                         channel=channel_id, chip=chip_id, die=die_id, plane=plane_id,
                         sub_plane=block_id, page=page_idx
                     )
-                    amu.gmt[lpa] = cmt_entry(address=addr, dirty=False)
-
+                    user_lpa_to_ppa[lpa] = addr
             plane_bke.valid_page_count += valid_per_full_block
             plane_bke.invalid_page_count += num_invalid_per_full
-
         # 处理 write_frontier_block
         frontier_bke = plane_bke.block_entries[write_frontier_block_id]
         if left_page > 0:
-            # write_frontier_page: frontier block 中"已使用"的页数（含 valid + invalid）
             write_frontier_page = min(int(left_page / valid_invalid_ratio), self.pages_per_block)
             num_invalid_in_frontier = write_frontier_page - left_page
-
             used_positions = list(range(write_frontier_page))
             valid_positions_f = set(random.sample(used_positions, left_page))
             invalid_positions_f = set(p for p in used_positions if p not in valid_positions_f)
-
             frontier_bke.valid_pages = valid_positions_f
             frontier_bke.valid_page_count = left_page
             frontier_bke.invalid_pages = invalid_positions_f
             frontier_bke.invalid_page_count = num_invalid_in_frontier
             frontier_bke.free_page_count = self.pages_per_block - write_frontier_page
             frontier_bke.write_frontier = write_frontier_page
-
             for page_idx in valid_positions_f:
                 item = items[data_idx]
                 data_idx += 1
@@ -475,30 +491,27 @@ class Block_Manager:
                     pd.lpa = lpa
                     pd.valid_bitmap = item.get('valid_bitmap', [])
                     pd.data = item.get('data', [])
-                if amu is not None:
+                    pd.function = PageType.USER
+                if user_lpa_to_ppa is not None:
                     addr = FlashAddress(
                         channel=channel_id, chip=chip_id, die=die_id, plane=plane_id,
                         sub_plane=write_frontier_block_id, page=page_idx
                     )
-                    amu.gmt[lpa] = cmt_entry(address=addr, dirty=False)
-
+                    user_lpa_to_ppa[lpa] = addr
             plane_bke.valid_page_count += left_page
             plane_bke.invalid_page_count += num_invalid_in_frontier
         else:
             frontier_bke.free_page_count = self.pages_per_block
             frontier_bke.write_frontier = 0
-
-        # 重算 plane 的 free_page_count
         plane_bke.free_page_count = (
             len(plane_bke.free_block_pool) * self.pages_per_block
             + frontier_bke.free_page_count
         )
-
-        print(f"[Block Manager] <preconditioning> Channel {channel_id} Chip {chip_id} Die {die_id} Plane {plane_id}:")
-        print(f"  - Data entries: {num_page} | Full blocks: {num_full_block} | Left pages: {left_page}")
-        print(f"  - Write frontier block: {write_frontier_block_id} (frontier: {frontier_bke.write_frontier}/{self.pages_per_block})")
-        print(f"  - Free block pool: {len(plane_bke.free_block_pool)}")
-        print(f"  - Total free/valid/invalid pages: {plane_bke.free_page_count}/{plane_bke.valid_page_count}/{plane_bke.invalid_page_count}")
+        debug_info(f"[Block Manager] <preconditioning> Channel {channel_id} Chip {chip_id} Die {die_id} Plane {plane_id}:")
+        debug_info(f"  - Data entries: {num_page} | Full blocks: {num_full_block} | Left pages: {left_page}")
+        debug_info(f"  - Write frontier block: {write_frontier_block_id} (frontier: {frontier_bke.write_frontier}/{self.pages_per_block})")
+        debug_info(f"  - Free block pool: {len(plane_bke.free_block_pool)}")
+        debug_info(f"  - Total free/valid/invalid pages: {plane_bke.free_page_count}/{plane_bke.valid_page_count}/{plane_bke.invalid_page_count}")
 
 class TSU:
     """Transaction Scheduling Unit — Out-of-Order version.
@@ -729,13 +742,13 @@ class TSU:
             elif chip_status in (ChipStatus.WRITE, ChipStatus.GC_WRITE):
                 if not chip_bke.EnableWriteSuspend or chip_bke.HasSuspendedCommands:
                     return False
-                if chip_bke.Expected_Finish_Time - CURRENT_TIME() < REASONABLE_TIME_SUSPEND_WRITE_FOR_READ:
+                if chip_bke.Expected_Finish_time - CURRENT_TIME() < REASONABLE_TIME_SUSPEND_WRITE_FOR_READ:
                     return False
                 suspension_required = True
             elif chip_status == ChipStatus.ERASE:
                 if not chip_bke.EnableEraseSuspend or chip_bke.HasSuspendedCommands:
                     return False
-                if chip_bke.Expected_Finish_Time - CURRENT_TIME() < REASONABLE_TIME_SUSPEND_ERASE_FOR_READ:
+                if chip_bke.Expected_Finish_time - CURRENT_TIME() < REASONABLE_TIME_SUSPEND_ERASE_FOR_READ:
                     return False
                 suspension_required = True
             else:
@@ -774,7 +787,7 @@ class TSU:
             elif chip_status == ChipStatus.ERASE:
                 if not chip_bke.EnableEraseSuspend or chip_bke.HasSuspendedCommands:
                     return False
-                if chip_bke.Expected_Finish_Time - CURRENT_TIME() < REASONABLE_TIME_SUSPEND_ERASE_FOR_WRITE:
+                if chip_bke.Expected_Finish_time - CURRENT_TIME() < REASONABLE_TIME_SUSPEND_ERASE_FOR_WRITE:
                     return False
                 suspension_required = True
             else:
@@ -1159,6 +1172,7 @@ class Address_Mapping_Unit:
     def __init__(self):
         print("Initializing Address Mapping Unit...")
         self._construction_valid: bool = False
+        self.flash_geometry = FlashGeometry()
         self.domains = [Address_Mapping_Domain() for _ in range(NUM_OF_QUEUES)]
         self.waiting_for_mapping_trans: dict[int, list[Transaction]] = defaultdict(list)
         self.tsu: TSU
@@ -1166,6 +1180,30 @@ class Address_Mapping_Unit:
         self.gmt: dict[int, cmt_entry] = {}
         self.gtd: dict[int, GTDEntry] = {}
         self.block_manager: Block_Manager
+        # Random-access region excludes static chips.
+        non_static_chip_no = self.flash_geometry.chip_per_channel - self.flash_geometry.static_chip_per_channel
+        self.total_random_access_pages = (
+            self.flash_geometry.channel_no
+            * non_static_chip_no
+            * self.flash_geometry.dies
+            * self.flash_geometry.planes_per_die
+            * self.flash_geometry.blocks_per_plane
+            * self.flash_geometry.pages_per_block
+        )
+        self.mapping_page_count = (
+            self.total_random_access_pages + LPA_NO_PER_MAPPING_PAGE - 1
+        ) // LPA_NO_PER_MAPPING_PAGE
+        self.random_access_data_pages = self.total_random_access_pages - self.mapping_page_count
+        self.mapping_region_start_page = self.random_access_data_pages
+        if self.random_access_data_pages <= 0:
+            raise ValueError(
+                "[AMU] Invalid mapping layout: no random-access data pages left after reserving mapping pages"
+            )
+        print(
+            f"[AMU] Mapping layout: total_random_access_pages={self.total_random_access_pages}, "
+            f"mapping_page_count={self.mapping_page_count}, "
+            f"mapping_region=[{self.mapping_region_start_page}, {self.total_random_access_pages})"
+        )
         for domain in self.domains:
             domain.gtd = self.gtd
             domain.gmt = self.gmt
@@ -1254,7 +1292,11 @@ class Address_Mapping_Unit:
                     if mvpn not in self.gtd:
                         raise ValueError("Read request accessing non-existing mapping page")
                     entry = self.gtd[mvpn]
-                    if entry.valid_lpa_bitmap[tr.lpa % LPA_NO_PER_MAPPING_PAGE] == 0:
+                    phy = self.tsu.phy
+                    _addr = entry.address
+                    _pd = phy._storage[_addr.channel][_addr.chip][_addr.die][_addr.plane][_addr.sub_plane][_addr.page]
+                    if _pd.valid_bitmap[tr.lpa % LPA_NO_PER_MAPPING_PAGE] == 0:
+                        debug_info(f"[AMU] <translate_and_submit> lpa: {tr.lpa}, mvpn: {mvpn}, entry: {entry}")
                         raise ValueError("Read request accessing invalid lpa in mapping page")
                     debug_info(f"[AMU] <translate_and_submit> Read mapping page")
                     read_tr = self.generate_mapping_read_transaction(tr, mvpn)
@@ -1319,8 +1361,7 @@ class Address_Mapping_Unit:
         if mvpn not in self.gtd:
             # writing to a new mapping page, get page address for it
             page_address = self.get_plane_address_for_mvpn(mvpn)
-            page_address = self.block_manager.get_write_frontier(page_address)
-            self.gtd[mvpn] = GTDEntry(address=page_address, valid_lpa_bitmap=bitmap)
+            self.gtd[mvpn] = GTDEntry(address=page_address)
             write_tr = Transaction(
                 source_req=None,
                 type=TransactionType.MAPPING_WRITE,
@@ -1344,8 +1385,11 @@ class Address_Mapping_Unit:
                 data_ready=True
             )
             need_read = False
+            _phy = self.tsu.phy
+            _gaddr = gtd_entry.address
+            _gpd = _phy._storage[_gaddr.channel][_gaddr.chip][_gaddr.die][_gaddr.plane][_gaddr.sub_plane][_gaddr.page]
             for i in range(LPA_NO_PER_MAPPING_PAGE):
-                if gtd_entry.valid_lpa_bitmap[i] == 1 and bitmap[i] == 0:
+                if _gpd.valid_bitmap[i] == 1 and bitmap[i] == 0:
                     need_read = True
                     break
             # working
@@ -1375,14 +1419,65 @@ class Address_Mapping_Unit:
 
     def get_plane_address_for_mvpn(self, mvpn) -> FlashAddress:
         """
-        choose a plane address to store the new GTDEntry for mvpn.
-        here we simply tread mvpn as a lpa and use the static address mapping scheme to get a plane address, which is not optimized but simple.
+        Return a fixed physical page address for mapping page mvpn.
+
+        Mapping pages are reserved at the tail of random-access pages and are
+        sequentially assigned: mvpn=0 -> first reserved page, mvpn=1 -> second, ...
         """
-        return self.get_plane_address_for_lpa(mvpn)
+        if mvpn < 0 or mvpn >= self.mapping_page_count:
+            raise ValueError(
+                f"[AMU] mvpn {mvpn} out of range [0, {self.mapping_page_count - 1}]"
+            )
+        mapping_page_index = self.mapping_region_start_page + mvpn
+        return self._random_access_page_index_to_address(mapping_page_index)
+
+    def _random_access_page_index_to_address(self, page_index: int) -> FlashAddress:
+        """Translate a linear page index in random-access region to full FlashAddress."""
+        if page_index < 0 or page_index >= self.total_random_access_pages:
+            raise ValueError(
+                f"[AMU] random-access page index {page_index} out of range [0, {self.total_random_access_pages - 1}]"
+            )
+
+        g = self.flash_geometry
+        non_static_chip_no = g.chip_per_channel - g.static_chip_per_channel
+        pages_per_block = g.pages_per_block
+        pages_per_plane = g.blocks_per_plane * pages_per_block
+        pages_per_die = g.planes_per_die * pages_per_plane
+        pages_per_chip = g.dies * pages_per_die
+        pages_per_channel = non_static_chip_no * pages_per_chip
+
+        channel_id = page_index // pages_per_channel
+        rem = page_index % pages_per_channel
+
+        chip_id = rem // pages_per_chip
+        rem = rem % pages_per_chip
+
+        die_id = rem // pages_per_die
+        rem = rem % pages_per_die
+
+        plane_id = rem // pages_per_plane
+        rem = rem % pages_per_plane
+
+        block_id = rem // pages_per_block
+        page_id = rem % pages_per_block
+
+        return FlashAddress(
+            channel=channel_id,
+            chip=chip_id,
+            die=die_id,
+            plane=plane_id,
+            sub_plane=block_id,
+            page=page_id,
+        )
 
     def get_plane_address_for_lpa(self, lpa) -> FlashAddress:
         # LPA 从低到高: page in block, block in plane, plane in die, die, chip, channel.
         # 先除以 (block*page) 再对 PLANE_PER_DIE 取模，得到 plane 索引 [0, PLANE_PER_DIE-1]
+        if lpa < 0 or lpa >= self.random_access_data_pages:
+            raise ValueError(
+                f"[AMU] LPA {lpa} out of random-access data range [0, {self.random_access_data_pages - 1}] "
+                f"(tail pages reserved for mapping pages)"
+            )
         pages_per_plane = BLOCK_PER_PLANE * PAGE_PER_BLOCK
         lpa //= pages_per_plane
         plane_id = lpa % PLANE_PER_DIE

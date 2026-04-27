@@ -12,8 +12,8 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 _BASE = Path(__file__).resolve().parent
 _REPO_ROOT = _BASE.parent
-INPUT_JSON = str(_REPO_ROOT / "test_case" / "test_read_write.json")
-MERGED_LOG = str(_BASE / "output" / "test_read_write.log")
+INPUT_JSON = str(_REPO_ROOT / "test_case" / "test_read.json")
+MERGED_LOG = str(_BASE / "output" / "test_read.log")
 MERGED_LOG_MIRROR_CONSOLE = True
 
 
@@ -128,22 +128,23 @@ if __name__ == "__main__":
             sim_engine.Start_simulation(INPUT_JSON)
         except Exception as e:
             print(f"Error: {e}")
-            try:
-                print(
-                    "address_mapping_unit.gtd:",
-                    sim_engine.device.ftl.address_mapping_unit.gtd,
-                )
-            except Exception as _:
-                print("(address_mapping_unit.gtd not available:", _)
-            print("\n--- Traceback (most recent call last) ---")
             traceback.print_exc()
         finally:
             print("Simulation completed.")
             print(f"Simulation time: {sim_engine.Get_current_time()}")
             print(format_event_queue(sim_engine.event_queue.queue))
-            print(sim_engine.device.ftl.address_mapping_unit.cmt.cache)
-            print(sim_engine.device.ftl.address_mapping_unit.gmt)
-            print(sim_engine.device.ftl.address_mapping_unit.gtd)
+            print(
+                "address_mapping_unit.gtd:",
+                sim_engine.device.ftl.address_mapping_unit.gtd,
+            )
+            print(
+                "address_mapping_unit.cmt.cache:",
+                sim_engine.device.ftl.address_mapping_unit.cmt.cache,
+            )
+            print(
+                "address_mapping_unit.gmt:",
+                sim_engine.device.ftl.address_mapping_unit.gmt,
+            )
     finally:
         if _merged_backing is not None:
             try:

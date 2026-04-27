@@ -121,14 +121,14 @@ STATIC_BASE_LHA = SECTOR_PER_PAGE * PAGE_PER_BLOCK * BLOCK_PER_PLANE * PLANE_PER
 # ----- 常量 -----
 CMT_SIZE = 2
 LPA_NO_PER_SECTOR = 4
-LPA_NO_PER_MAPPING_PAGE = LPA_NO_PER_SECTOR * SECTOR_PER_PAGE
+LPA_NO_PER_MAPPING_PAGE = LPA_NO_PER_SECTOR * SECTOR_PER_PAGE # 256
 NUM_OF_QUEUES = 8
 VIRTUAL_DATA_ADDRESS = 0xFFFFFFFFFFFFFFFF
-GC_WL_MANAGER_FREE_BLOCK_POOL_THRESHOLD = 63
+GC_WL_MANAGER_FREE_BLOCK_POOL_THRESHOLD = 3
 
-# debug_info = print
-def debug_info(*args, **kwargs):
-    pass
+debug_info = print
+# def debug_info(*args, **kwargs):
+#     pass
 
 # ── Flash timing constants (nanoseconds) ────────────────────────────────────
 PHY_CMD_ADDR_TIME = 100          # command + address bus transfer time
@@ -177,7 +177,7 @@ class Transaction:
     data_ready: bool = True
     exec_event: Optional[SimEvent] = None
     payload: list[int] = field(default_factory=list) # register data if type is TransactionType.USER_..., else payload for mapping write
-    response: Optional[list[int]] = None # register response data when necessary
+    response: Optional['PageData'] = None # register response data when necessary
     # GC: source physical page before migrate (for mapping / BKE invalidation)
     gc_old_address: Optional[FlashAddress] = field(default=None)
     invalidate_target: Optional[FlashAddress] = field(default=None)
@@ -189,8 +189,8 @@ class Transaction:
                 self.payload[i] = tr.payload[i] if self.payload[i] is None else self.payload[i]
         elif self.type in [TransactionType.USER_READ, TransactionType.USER_WRITE] and tr.type == TransactionType.MAPPING_READ:
             idx = self.lpa % LPA_NO_PER_MAPPING_PAGE
-            if tr.bitmap[idx] == 1 and tr.response[idx] is not None:
-                self.address = self.translate_ppa_to_address(tr.response[idx])
+            if tr.bitmap[idx] == 1 and tr.response.data[idx] is not None:
+                self.address = tr.response.data[idx]
             else:
                 raise ValueError(f"[Transaction] <get_response_from_transaction> accessing invalid lpa in mapping page!")
         elif self.type == TransactionType.USER_WRITE and tr.type == TransactionType.USER_READ_FOR_WRITE:
@@ -377,21 +377,16 @@ class cmt_entry:
     dirty: bool
 
 class GTDEntry:
-    def __init__(self, address, valid_lpa_bitmap = [0 for _ in range(LPA_NO_PER_MAPPING_PAGE)]) -> None:
+    def __init__(self, address) -> None:
         self.address = address
-        self.valid_lpa_bitmap = valid_lpa_bitmap
     
     def __eq__(self, other: 'GTDEntry') -> bool:
-        return self.address == other.address and self.valid_lpa_bitmap == other.valid_lpa_bitmap
-
-    def set_valid_lpa_bitmap(self, lpa, value):
-        self.valid_lpa_bitmap[lpa%LPA_NO_PER_MAPPING_PAGE] = value
+        return self.address == other.address
     
     def __str__(self) -> str:
         lines = [
             "GTDEntry:",
             f"  address:       {self.address}",
-            f"  valid_bitmap:  {self.valid_lpa_bitmap}",
         ]
         return "\n".join(lines)
         
