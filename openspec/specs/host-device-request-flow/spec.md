@@ -44,12 +44,12 @@ Define the baseline request path between Host, PCIe, HIL, and the controller-sid
 
 ### Requirement: 写入类请求必须先向 Host 获取数据并写入控制器缓存
 
-对 `WRITE`、`SEARCH`、`COMPUTE` 和 `STATIC_WRITE`，`HIL` SHALL 先向 `Host` 请求数据载荷；对 `WRITE` 和 `STATIC_WRITE`，数据到达后 MUST 被切片写入控制器 cache，并以“控制器已接收”为语义向 Host 返回请求完成。
+对 `WRITE`、`SEARCH`、`COMPUTE` 和 `STATIC_WRITE`，`HIL` SHALL 先向 `Host` 请求数据载荷；但 `Host` MUST 仅基于 `Request.size` 生成等长占位数据，不再依赖 `Request.data_address` 或 `Request.data_size`。对 `WRITE` 和 `STATIC_WRITE`，数据到达后 MUST 被切片写入控制器 cache，并以“控制器已接收”为语义向 Host 返回请求完成。
 
 #### Scenario: Write 数据到达控制器
 
 - **WHEN** `HIL` 收到 `WRITE_DATA` 或 `STATIC_WRITE_DATA`
-- **THEN** `HIL` MUST 把数据按事务粒度切片、写入 cache，并立即发送 `REQ_COMP` 给 Host，而不要求等待 NAND program 完成
+- **THEN** `Host` MUST 返回长度为 `Request.size` 的占位数据列表，`HIL` MUST 把数据按事务粒度切片、写入 cache，并立即发送 `REQ_COMP` 给 Host，而不要求等待 NAND program 完成
 
 ### Requirement: 读搜索计算请求在事务完成后回传完成状态
 

@@ -73,8 +73,6 @@ class Engine:
                 transaction_list=[],
                 lha_start=cmd["start_lha"],
                 size=cmd["size"],
-                data_address=cmd.get("data_address"),
-                data_size=cmd.get("data_size"),
             )
             if cmd.get("invalidate") == 1: # for invalidative write
                 req.invalidate = True

@@ -27,8 +27,6 @@ def gen_gc_test(block_count: int, page_count: int) -> list[dict]:
                 "time": 0,
                 "start_lha": lha_cntr,
                 "size": 1,
-                "data_address": -1,
-                "data_size": 1,
             })
             lha_cntr += SECTOR_PER_PAGE
     return trace

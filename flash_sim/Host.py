@@ -20,10 +20,8 @@ class Host:
             self._queue_ptrs = queue_ptrs
             self._depth = depth
 
-        def read(self, address: int, size: int) -> bytes:
-            # if address == VIRTUAL_DATA_ADDRESS:
-            #     return b'\x00' * size
-            # return self.storage[address]
+        def read(self, size: int) -> list[int]:
+            # The simulator no longer models real host-memory payload buffers.
             return [11 for _ in range(size)]
 
         def write(self, address: int, data: bytes):
@@ -37,14 +35,13 @@ class Host:
                 ) % self._depth
 
         def get_req_data(self, req):
-            if req.type == RequestType.WRITE:
-                return self.read(req.data_address, req.data_size)
-            elif req.type == RequestType.SEARCH:
-                return self.read(req.data_address, req.data_size)
-            elif req.type == RequestType.COMPUTE:
-                return self.read(req.data_address, req.data_size)
-            elif req.type == RequestType.STATIC_WRITE:
-                return self.read(req.data_address, req.data_size)
+            if req.type in (
+                RequestType.WRITE,
+                RequestType.SEARCH,
+                RequestType.COMPUTE,
+                RequestType.STATIC_WRITE,
+            ):
+                return self.read(req.size)
             else:
                 raise ValueError(f"{req.type} request has no data attached!")
 

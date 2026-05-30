@@ -287,8 +287,6 @@ class Request:
     transaction_list: List[Transaction] = field(default_factory=list)
     lha_start: int = 0   # start logical sector address
     size: int = 0   # size of request
-    data_address: Optional[int] = None
-    data_size: Optional[int] = None
     issue_time: Optional[int] = None
     finish_time: Optional[int] = None
     status: Optional[str] = None

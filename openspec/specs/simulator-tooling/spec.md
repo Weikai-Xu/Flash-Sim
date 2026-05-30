@@ -8,12 +8,17 @@ Define the baseline tooling layer around the simulator, including trace parsing,
 
 ### Requirement: Trace 解析器必须验证支持的命令格式
 
-`parser.py` SHALL 支持从 JSON 字符串、文件路径或 Python 列表读取命令，并对 `read`、`write`、`static_write`、`search` 和 `compute` 的必填字段执行验证。
+`parser.py` SHALL 支持从 JSON 字符串、文件路径或 Python 列表读取命令，并对 `read`、`write`、`static_write`、`search` 和 `compute` 的必填字段执行验证。对于携带数据的命令，`parser.py` MUST 不再要求 `data_address` 或 `data_size`，而是以 `size` 作为唯一的请求长度指示。
 
-#### Scenario: 解析 trace 文件
+#### Scenario: 解析 size-only trace 文件
 
-- **WHEN** 调用 `parse_trace(...)` 读取一个 JSON trace 文件
-- **THEN** 解析器 MUST 返回命令列表，并在缺少 `type` 或命令所需字段时抛出验证错误
+- **WHEN** 调用 `parse_trace(...)` 读取一个包含 `write`、`static_write`、`search` 或 `compute` 命令的 JSON trace 文件，且这些命令只提供 `time`、`start_lha` 和 `size`
+- **THEN** 解析器 MUST 返回命令列表，并仅对受支持的必填字段执行验证
+
+#### Scenario: 解析 legacy extra fields
+
+- **WHEN** 调用 `parse_trace(...)` 读取的命令中仍然包含 `data_address` 或 `data_size`
+- **THEN** 解析器 MUST 不将这些字段当作必填条件，并继续基于其他必填字段完成验证
 
 ### Requirement: 工具函数必须提供地址与区域转换能力
 
