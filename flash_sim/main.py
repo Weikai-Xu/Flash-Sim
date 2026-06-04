@@ -1,3 +1,4 @@
+import os
 import sys
 import threading
 import traceback
@@ -12,9 +13,19 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 _BASE = Path(__file__).resolve().parent
 _REPO_ROOT = _BASE.parent
-INPUT_JSON = str(_REPO_ROOT / "test_case" / "gc_test.json")
-MERGED_LOG = str(_REPO_ROOT / "output" / "gc_test.log")
-MERGED_LOG_MIRROR_CONSOLE = True
+INPUT_JSON = os.environ.get(
+    "FLASH_SIM_INPUT_JSON",
+    str(_REPO_ROOT / "test_case" / "test_trace.json"),
+)
+MERGED_LOG = os.environ.get(
+    "FLASH_SIM_MERGED_LOG",
+    str(_REPO_ROOT / "output" / f"{Path(INPUT_JSON).stem}.log"),
+)
+MERGED_LOG_MIRROR_CONSOLE = os.environ.get("FLASH_SIM_MIRROR_CONSOLE", "1").lower() not in {
+    "0",
+    "false",
+    "no",
+}
 
 
 def _validate_input_paths() -> None:
@@ -58,7 +69,6 @@ class _LockedMergedStream:
 
 
 if __package__ in (None, ""):
-    import os
     import sys
 
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -132,6 +142,8 @@ if __name__ == "__main__":
         finally:
             print("Simulation completed.")
             print(f"Simulation time: {sim_engine.Get_current_time()}")
+            if sim_engine.last_request_latency_report_path is not None:
+                print(f"Request latency report: {sim_engine.last_request_latency_report_path}")
             print(format_event_queue(sim_engine.event_queue.queue))
             print(
                 "address_mapping_unit.gtd:",

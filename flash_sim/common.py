@@ -208,6 +208,7 @@ class Transaction:
     gc_old_address: Optional[FlashAddress] = field(default=None)
     invalidate_target: Optional[FlashAddress] = field(default=None)
     cache_flush_generated: bool = False
+    report_origin_request_ids: list[str] = field(default_factory=list)
 
     def get_response_from_transaction(self, tr: 'Transaction'):
         if self.type == TransactionType.MAPPING_WRITE and tr.type == TransactionType.MAPPING_READ:
@@ -317,6 +318,10 @@ class Request:
     error_message: Optional[str] = None
     completion_sent: bool = False
     invalidate: Optional[bool] = False
+    trace_index: Optional[int] = None
+    trace_time: Optional[int] = None
+    report_req_id: Optional[str] = None
+    report_origin_request_ids: list[str] = field(default_factory=list)
 
     def is_serviced(self) -> bool:
         """是否所有 transaction 已处理完成。"""
@@ -451,6 +456,7 @@ class GTDEntry:
 # ── Simulation time / event scheduling (set by Engine at startup) ──────────
 _time_provider = None       # () -> int   returns current sim time in ns
 _event_scheduler = None     # (event_type, target, param, scheduled_time) -> None
+_request_latency_recorder = None
 
 
 def CURRENT_TIME() -> int:
@@ -463,9 +469,18 @@ def CURRENT_TIME() -> int:
 def Register_event(event_type: str, target: Any, param: Any, scheduled_time: int) -> None:
     """Register a future simulation event."""
     if _event_scheduler is not None:
-        _event_scheduler(event_type, target, param, scheduled_time)
+        return _event_scheduler(event_type, target, param, scheduled_time)
     else:
         raise ValueError("Event scheduler is not initialized")
+
+
+def SET_REQUEST_LATENCY_RECORDER(recorder: Any) -> None:
+    global _request_latency_recorder
+    _request_latency_recorder = recorder
+
+
+def REQUEST_LATENCY_RECORDER() -> Any:
+    return _request_latency_recorder
 
 
 if __name__ == "__main__":

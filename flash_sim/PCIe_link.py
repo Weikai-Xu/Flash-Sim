@@ -9,6 +9,7 @@ from .common import (
     MessageType,
     PCIE_INTERFACE_BANDWIDTH_BYTES_PER_NS,
     PCIE_PACKET_OVERHEAD_BYTES,
+    REQUEST_LATENCY_RECORDER,
     SECTOR_SIZE_BYTES,
 )
 
@@ -52,16 +53,31 @@ class PCIe_link:
         self._construction_valid = True
 
     def send(self, message, target):
+        estimated_latency = self.estimate_latency(message)
+        transfer_bytes = self._estimate_transfer_bytes(message)
+        recorder = REQUEST_LATENCY_RECORDER()
         if target == self.device:
             self.host_to_device_queue.append(message)
+            if recorder is not None:
+                recorder.note_pcie_enqueued(
+                    message,
+                    "host_to_device",
+                    self.engine.current_time,
+                    transfer_bytes,
+                )
             if len(self.host_to_device_queue) == 1:
-                estimated_latency = self.estimate_latency(message)
                 estimated_finish_time = self.engine.current_time + estimated_latency
                 self.Register_sim_event(EventType.DELIVER, self, {"target": self.device.hil}, estimated_finish_time)
         elif target == self.host:
             self.device_to_host_queue.append(message)
+            if recorder is not None:
+                recorder.note_pcie_enqueued(
+                    message,
+                    "device_to_host",
+                    self.engine.current_time,
+                    transfer_bytes,
+                )
             if len(self.device_to_host_queue) == 1:
-                estimated_latency = self.estimate_latency(message)
                 estimated_finish_time = self.engine.current_time + estimated_latency
                 self.Register_sim_event(EventType.DELIVER, self, {"target": self.host}, estimated_finish_time)
 
@@ -104,6 +120,9 @@ class PCIe_link:
         else:
             raise ValueError(f"[PCIe_link] <execute> unexpected target: {target}")
         event.param["message"] = message
+        recorder = REQUEST_LATENCY_RECORDER()
+        if recorder is not None:
+            recorder.note_pcie_delivered(message, self.engine.current_time)
         target.execute(event)
         if target == self.device.hil:
             if len(self.host_to_device_queue) > 0:

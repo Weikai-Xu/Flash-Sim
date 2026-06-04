@@ -427,17 +427,17 @@ class TimingConfig:
     technology: FlashTechnology = FlashTechnology.SLC
 
     # Read latencies (tR) in nanoseconds
-    t_r_lsb: int = 75_000    # LSB page read latency
+    t_r_lsb: int = 5_000    # LSB page read latency
     t_r_csb: int = 100_000   # CSB page read latency (MLC/TLC only)
     t_r_msb: int = 150_000   # MSB page read latency (MLC/TLC only)
 
     # Program latencies (tPROG) in nanoseconds
-    t_prog_lsb: int = 750_000   # LSB page program latency
+    t_prog_lsb: int = 250_000   # LSB page program latency
     t_prog_csb: int = 1_000_000 # CSB page program latency (MLC/TLC only)
     t_prog_msb: int = 1_500_000 # MSB page program latency (MLC/TLC only)
 
     # Erase latency (tBERS) - same for all page types
-    t_bers: int = 3_800_000  # Block erase latency: 3.8 milliseconds
+    t_bers: int = 10_000_000  # Block erase latency: 10 milliseconds
 
     # Search latency (tSEARCH) in nanoseconds
     t_search_lsb: int = 200_000   # LSB search latency

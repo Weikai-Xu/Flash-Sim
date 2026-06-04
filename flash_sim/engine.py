@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+from pathlib import Path
 from queue import PriorityQueue
 
 if __package__ in (None, ""):
@@ -15,6 +16,7 @@ if __package__ in (None, ""):
     from flash_sim import common as _common
     from flash_sim.common import EventType, SimEvent, Request, RequestType, format_event_queue
     from flash_sim.parser import parse_trace
+    from flash_sim.request_latency_report import RequestLatencyRecorder
 else:
     from . import Host
     from . import pcie_link
@@ -22,6 +24,7 @@ else:
     from . import common as _common
     from .common import EventType, SimEvent, Request, RequestType, format_event_queue
     from .parser import parse_trace
+    from .request_latency_report import RequestLatencyRecorder
 
 class Engine:
     def __init__(self):
@@ -29,10 +32,15 @@ class Engine:
         self._construction_valid: bool = False
         self.current_time = 0
         self.event_queue = PriorityQueue()
+        self.repo_root = Path(__file__).resolve().parents[1]
 
         # Provide simulation time and event scheduling to all modules via common.py
         _common._time_provider = lambda: self.current_time
         _common._event_scheduler = self.Register_event
+        self.request_latency_recorder = RequestLatencyRecorder()
+        self.request_latency_recorder.attach(self)
+        _common.SET_REQUEST_LATENCY_RECORDER(self.request_latency_recorder)
+        self.last_request_latency_report_path: Path | None = None
 
         self.host = Host.Host("Host", num_of_queues=8, depth_of_queues=64)
         self.device = Device.Device(self.host)
@@ -46,6 +54,7 @@ class Engine:
         self.event_queue.put(event)
         print(f"[Engine] Time = {self.current_time}, Register_event: type={event_type}, scheduled_time={scheduled_time}, target={target.__class__.__name__}, param={param}")
         print()
+        return event
 
     def Execute_event(self):
         event = self.event_queue.get()
@@ -64,7 +73,8 @@ class Engine:
     def Initialize_event_queue(self, trace_path: str):
         """从 trace 文件解析请求，通过 Register_event 将每个 req 作为 event.param 压入 event_queue。"""
         commands = parse_trace(trace_path, mode="engine")
-        for cmd in commands:
+        self.request_latency_recorder.set_trace_context(trace_path)
+        for trace_index, cmd in enumerate(commands):
             scheduled_time = cmd["time"]
             req = Request(
                 type=RequestType(cmd["type"].upper()),
@@ -73,9 +83,13 @@ class Engine:
                 transaction_list=[],
                 lha_start=cmd["start_lha"],
                 size=cmd["size"],
+                trace_index=trace_index,
+                trace_time=scheduled_time,
+                report_req_id=f"req-{trace_index:04d}-{cmd['type']}-{cmd['start_lha']}-{cmd['size']}",
             )
             if cmd.get("invalidate") == 1: # for invalidative write
                 req.invalidate = True
+            self.request_latency_recorder.register_request(req, scheduled_time)
             self.Register_event(EventType.REQ_INIT, self.host, {"req": req}, scheduled_time)
     
     def Validate_construction(self):
@@ -106,4 +120,20 @@ class Engine:
         print("Starting simulation...\n")
         print("--------------------------------------------------------\n")
         self.Run()
+        self._finalize_pending_cache_flushes()
+        self._export_request_latency_report()
+
+    def _finalize_pending_cache_flushes(self):
+        cache_manager = self.device.hil.cache_manager
+        while cache_manager.has_pending_entries():
+            if not cache_manager.has_flushable_entries():
+                break
+            flushed = cache_manager.write_flush()
+            if not flushed:
+                break
+            self.Run()
+
+    def _export_request_latency_report(self):
+        report_path = self.request_latency_recorder.derive_report_path(self.repo_root / "report")
+        self.last_request_latency_report_path = self.request_latency_recorder.dump_json(report_path)
 

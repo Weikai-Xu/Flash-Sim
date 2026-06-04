@@ -37,7 +37,7 @@ where = ["."]
 include = ["flash_sim*"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["test_script"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
 addopts = "-v"

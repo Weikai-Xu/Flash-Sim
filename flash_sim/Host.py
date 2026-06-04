@@ -34,6 +34,11 @@ class Host:
                     self._queue_ptrs.sq_tails[queue_id] + 1
                 ) % self._depth
 
+        def sq_pop(self, queue_id):
+            if not self.sq_entries[queue_id]:
+                raise IndexError(f"Submission queue {queue_id} is empty")
+            return self.sq_entries[queue_id].pop(0)
+
         def get_req_data(self, req):
             if req.type in (
                 RequestType.WRITE,
@@ -132,6 +137,9 @@ class Host:
         if event.type == EventType.REQ_INIT:
             assert event.target == self
             req = event.param["req"]
+            recorder = REQUEST_LATENCY_RECORDER()
+            if recorder is not None:
+                recorder.note_req_init_executed(req, CURRENT_TIME())
             self.submit_req(req)
         elif event.type == EventType.DELIVER:
             message = event.param["message"]
@@ -153,6 +161,9 @@ class Host:
                 req.finish_time = CURRENT_TIME()
                 req.status = message.payload["status"]
                 req.error_message = message.payload.get("error_message")
+                recorder = REQUEST_LATENCY_RECORDER()
+                if recorder is not None:
+                    recorder.note_request_completed(req, CURRENT_TIME())
                 print(
                     "\n[Host] Received REQ_COMP: "
                     f"status={req.status} error_message={req.error_message!r} req={req}\n"
@@ -197,6 +208,9 @@ class Host:
         self.memory.sq_push(target_sq_id, req)
         req.sq_id = target_sq_id
         req.issue_time = CURRENT_TIME()
+        recorder = REQUEST_LATENCY_RECORDER()
+        if recorder is not None:
+            recorder.note_sq_entered(req, CURRENT_TIME())
         if self.io_flow_manager.is_flow_available(target_sq_id):
             flow = self.io_flow_manager.io_flows[target_sq_id]
             flow.busy = True
@@ -216,6 +230,9 @@ class Host:
         elif req.type == RequestType.STATIC_WRITE:
             msg_type = MessageType.STATIC_WRITE_REQ
         else: raise ValueError(f"Invalid request type: {req.type}")
+        recorder = REQUEST_LATENCY_RECORDER()
+        if recorder is not None:
+            recorder.note_host_sent(req, CURRENT_TIME())
         message = PCIe_message(msg_type, payload={"req": req})
         self.pcie_link.send(message, self.pcie_link.device)
 

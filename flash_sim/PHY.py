@@ -55,6 +55,11 @@ class DieBKE:
     def prepare_suspend(self, current_time: int) -> None:
         """Save active command to suspended slot and record remaining time."""
         self._remaining_on_suspend = max(0, self.expected_finish_time - current_time)
+        if self.active_command:
+            for tr in self.active_command.transactions:
+                if tr.exec_event is not None:
+                    tr.exec_event.ignored = True
+                    tr.exec_event = None
         self.suspended_command = self.active_command
         self.active_command = None
 
@@ -241,6 +246,15 @@ class PHY():
         die_bke.expected_finish_time = finish_time
         chip_bke.Expected_Finish_Time = finish_time
         self._channel_busy[channel_id] = True
+        recorder = REQUEST_LATENCY_RECORDER()
+        if recorder is not None:
+            recorder.note_phy_command_phase(
+                transactions,
+                op,
+                now,
+                finish_time,
+                PHY_CMD_ADDR_TIME,
+            )
         Register_event(event_type=ev, target=self, param={"chip_id": chip_id, "die_id": die_id, "transactions": transactions}, scheduled_time=finish_time)
 
     # ── sim_object event handler ───────────────────────────────────────────────
@@ -265,6 +279,9 @@ class PHY():
             chip_bke.status = ChipStatus.READ
             self._channel_busy[channel_id] = False
             finish = now + T_READ_LSB
+            recorder = REQUEST_LATENCY_RECORDER()
+            if recorder is not None:
+                recorder.note_phy_array_phase(transactions, "read", now, finish)
             die_bke.expected_finish_time = finish
             chip_bke.Expected_Finish_Time = finish
             Register_event(event_type=EventType.PHY_CHIP_READ_COMPLETE, target=self, param={"chip_id": chip_id, "die_id": die_id, "transactions": transactions}, scheduled_time=finish)
@@ -279,9 +296,19 @@ class PHY():
             chip_bke.status = ChipStatus.GC_WRITE if is_gc else ChipStatus.WRITE
             self._channel_busy[channel_id] = False
             finish = now + T_PROG
+            recorder = REQUEST_LATENCY_RECORDER()
+            if recorder is not None:
+                recorder.note_phy_array_phase(transactions, "write", now, finish)
             die_bke.expected_finish_time = finish
             chip_bke.Expected_Finish_Time = finish
-            Register_event(event_type=EventType.PHY_CHIP_WRITE_COMPLETE, target=self, param={"chip_id": chip_id, "die_id": die_id, "transactions": transactions}, scheduled_time=finish)
+            exec_event = Register_event(
+                event_type=EventType.PHY_CHIP_WRITE_COMPLETE,
+                target=self,
+                param={"chip_id": chip_id, "die_id": die_id, "transactions": transactions},
+                scheduled_time=finish,
+            )
+            for tr in transactions:
+                tr.exec_event = exec_event
             self._broadcast_channel_idle(channel_id)
 
         elif ev_type == EventType.PHY_ERASE_CMD_TRANSFERRED:
@@ -292,9 +319,19 @@ class PHY():
             chip_bke.status = ChipStatus.ERASE
             self._channel_busy[channel_id] = False
             finish = now + T_BERS
+            recorder = REQUEST_LATENCY_RECORDER()
+            if recorder is not None:
+                recorder.note_phy_array_phase(transactions, "erase", now, finish)
             die_bke.expected_finish_time = finish
             chip_bke.Expected_Finish_Time = finish
-            Register_event(event_type=EventType.PHY_CHIP_ERASE_COMPLETE, target=self, param={"chip_id": chip_id, "die_id": die_id, "transactions": transactions}, scheduled_time=finish)
+            exec_event = Register_event(
+                event_type=EventType.PHY_CHIP_ERASE_COMPLETE,
+                target=self,
+                param={"chip_id": chip_id, "die_id": die_id, "transactions": transactions},
+                scheduled_time=finish,
+            )
+            for tr in transactions:
+                tr.exec_event = exec_event
             self._broadcast_channel_idle(channel_id)
 
         elif ev_type == EventType.PHY_SEARCH_CMD_TRANSFERRED:
@@ -305,6 +342,9 @@ class PHY():
             chip_bke.status = ChipStatus.SEARCH
             self._channel_busy[channel_id] = False
             finish = now + T_SEARCH
+            recorder = REQUEST_LATENCY_RECORDER()
+            if recorder is not None:
+                recorder.note_phy_array_phase(transactions, "search", now, finish)
             die_bke.expected_finish_time = finish
             chip_bke.Expected_Finish_Time = finish
             Register_event(event_type=EventType.PHY_CHIP_SEARCH_COMPLETE, target=self, param={"chip_id": chip_id, "die_id": die_id, "transactions": transactions}, scheduled_time=finish)
@@ -318,6 +358,9 @@ class PHY():
             chip_bke.status = ChipStatus.COMPUTE
             self._channel_busy[channel_id] = False
             finish = now + T_COMPUTE
+            recorder = REQUEST_LATENCY_RECORDER()
+            if recorder is not None:
+                recorder.note_phy_array_phase(transactions, "compute", now, finish)
             die_bke.expected_finish_time = finish
             chip_bke.Expected_Finish_Time = finish
             Register_event(event_type=EventType.PHY_CHIP_COMPUTE_COMPLETE, target=self, param={"chip_id": chip_id, "die_id": die_id, "transactions": transactions}, scheduled_time=finish)
@@ -455,10 +498,14 @@ class PHY():
                     if tr.type in (
                         TransactionType.MAPPING_WRITE,
                         TransactionType.USER_WRITE,
+                        TransactionType.USER_STATIC_WRITE,
                         TransactionType.GC_WRITE,
                     ):
                         self._write_to_storage(tr)
                     debug_info(f"[PHY] following tr completed: {tr}")
+                    recorder = REQUEST_LATENCY_RECORDER()
+                    if recorder is not None:
+                        recorder.note_persistence_completed(tr, CURRENT_TIME())
                     for required_by_tr in tr.required_by_transactions:
                         required_by_tr.rely_on_transactions.remove(tr) # remove reliance
                         debug_info(f"[PHY] removed reliance by {required_by_tr}")
@@ -495,6 +542,14 @@ class PHY():
             ev = EventType.PHY_COMPUTE_DATA_TRANSFERRED
         else:
             raise ValueError(f"Command type {cmd_type} do not need to transfer data!")
+        recorder = REQUEST_LATENCY_RECORDER()
+        if recorder is not None:
+            recorder.note_phy_data_out_phase(
+                transactions,
+                cmd_type,
+                CURRENT_TIME(),
+                CURRENT_TIME() + PHY_DATA_OUT_TIME,
+            )
         Register_event(event_type=ev, target=self, param={"chip_id": chip_id, "die_id": die_id, "transactions": transactions}, scheduled_time=CURRENT_TIME() + PHY_DATA_OUT_TIME)
 
     def _send_resume_command(self, chip_id: Tuple[int, int]) -> None:
@@ -509,20 +564,43 @@ class PHY():
             if remaining <= 0:
                 raise ValueError("Remaining time is less than 0!")
             cmd_type = die_bke.active_command.cmd_type
+            transactions = die_bke.active_command.transactions
 
             if cmd_type == "write":
-                is_gc = "gc" in die_bke.active_command.transactions[0].type
+                is_gc = "gc" in transactions[0].type.value.lower()
                 chip_bke.status = ChipStatus.GC_WRITE if is_gc else ChipStatus.WRITE
                 finish = now + remaining
                 die_bke.expected_finish_time = finish
                 chip_bke.Expected_Finish_Time = finish
-                Register_event(EventType.PHY_CHIP_WRITE_COMPLETE, self, (chip_id, die_bke.die_id), finish)
+                exec_event = Register_event(
+                    EventType.PHY_CHIP_WRITE_COMPLETE,
+                    self,
+                    {
+                        "chip_id": chip_id,
+                        "die_id": die_bke.die_id,
+                        "transactions": transactions,
+                    },
+                    finish,
+                )
+                for tr in transactions:
+                    tr.exec_event = exec_event
             elif cmd_type == "erase":
                 chip_bke.status = ChipStatus.ERASE
                 finish = now + remaining
                 die_bke.expected_finish_time = finish
                 chip_bke.Expected_Finish_Time = finish
-                Register_event(EventType.PHY_CHIP_ERASE_COMPLETE, self, (chip_id, die_bke.die_id), finish)
+                exec_event = Register_event(
+                    EventType.PHY_CHIP_ERASE_COMPLETE,
+                    self,
+                    {
+                        "chip_id": chip_id,
+                        "die_id": die_bke.die_id,
+                        "transactions": transactions,
+                    },
+                    finish,
+                )
+                for tr in transactions:
+                    tr.exec_event = exec_event
             else:
                 raise ValueError(f"Calling resume for command type {cmd_type} is unreasonable!")
 
@@ -532,7 +610,11 @@ class PHY():
     def _write_to_storage(self, tr: Transaction) -> None:
         if tr.type == TransactionType.MAPPING_WRITE:
             page_type = PageType.MAPPING
-        elif tr.type in (TransactionType.USER_WRITE, TransactionType.GC_WRITE):
+        elif tr.type in (
+            TransactionType.USER_WRITE,
+            TransactionType.USER_STATIC_WRITE,
+            TransactionType.GC_WRITE,
+        ):
             page_type = PageType.USER
         else:
             raise ValueError(f"Invalid transaction type for writing to storage: {tr.type}")

@@ -171,5 +171,5 @@ Flash-Sim currently functions as a **flash chip timing calculator** with basic F
 ## Running Tests
 
 ```bash
-pytest tests/
+pytest test_script/
 ```

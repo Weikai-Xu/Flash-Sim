@@ -643,9 +643,18 @@ class TSU:
     def Submit_trans(self, trans: Transaction):
         """Endeque a transaction to the appropriate per-chip priority deque."""
         debug_info(f"[TSU] <Submit_trans> submitting trans: {repr(trans)}")
+        if (
+            not trans.report_origin_request_ids
+            and trans.source_req is not None
+            and trans.source_req.report_req_id is not None
+        ):
+            trans.report_origin_request_ids = [trans.source_req.report_req_id]
         channel = trans.address.channel
         chip    = trans.address.chip
         self.queues[channel][chip][trans.type].append(trans)
+        recorder = REQUEST_LATENCY_RECORDER()
+        if recorder is not None:
+            recorder.note_tsu_enqueued(trans, CURRENT_TIME())
 
     def start_cache_pressure_drain(self, write_count: int):
         if write_count <= 0:
@@ -1054,6 +1063,10 @@ class TSU:
             if dispatch_slots:
                 dispatched = True
                 debug_info(f"[TSU] <issue_command> dispatching {len(dispatch_slots)} transactions to PHY")
+                recorder = REQUEST_LATENCY_RECORDER()
+                if recorder is not None:
+                    for tr in dispatch_slots:
+                        recorder.note_tsu_dispatched(tr, CURRENT_TIME())
                 for tr in dispatch_slots:
                     if tr in q1:
                         q1.remove(tr)
@@ -1108,6 +1121,10 @@ class TSU:
                     break
 
             if dispatch_slots:
+                recorder = REQUEST_LATENCY_RECORDER()
+                if recorder is not None:
+                    for tr in dispatch_slots:
+                        recorder.note_tsu_dispatched(tr, CURRENT_TIME())
                 for tr in dispatch_slots:
                     q.remove(tr)
                 self.phy.send_command_to_chip(chip_id, dispatch_slots, False)
@@ -1156,6 +1173,10 @@ class TSU:
                 dispatch_slots.append(tr)
 
             if dispatch_slots:
+                recorder = REQUEST_LATENCY_RECORDER()
+                if recorder is not None:
+                    for tr in dispatch_slots:
+                        recorder.note_tsu_dispatched(tr, CURRENT_TIME())
                 for tr in dispatch_slots:
                     q.remove(tr)
                 self.phy.send_command_to_chip(chip_id, dispatch_slots, False)
@@ -1206,6 +1227,10 @@ class TSU:
                     break
 
             if dispatch_slots:
+                recorder = REQUEST_LATENCY_RECORDER()
+                if recorder is not None:
+                    for tr in dispatch_slots:
+                        recorder.note_tsu_dispatched(tr, CURRENT_TIME())
                 for tr in dispatch_slots:
                     q.remove(tr)
                 self.phy.send_command_to_chip(chip_id, dispatch_slots, False)   
@@ -1343,6 +1368,15 @@ class Address_Mapping_Unit:
                     arriving_lpa,
                     tr.error_message or "mapping read failed",
                 )
+                recorder = REQUEST_LATENCY_RECORDER()
+                if recorder is not None:
+                    for lpa in arriving_lpa:
+                        for waiting_tr in self.waiting_for_mapping_trans[lpa]:
+                            recorder.note_mapping_wait_end(
+                                waiting_tr.source_req,
+                                str(id(tr)),
+                                CURRENT_TIME(),
+                            )
                 debug_info("[AMU] <_handle_mapping_response> failed mapping read cleaned up")
                 return
             if tr.response is None:
@@ -1352,6 +1386,14 @@ class Address_Mapping_Unit:
             for lpa in arriving_lpa:
                 idx = lpa % LPA_NO_PER_MAPPING_PAGE
                 if tr.response.valid_bitmap[idx] == 0:
+                    recorder = REQUEST_LATENCY_RECORDER()
+                    if recorder is not None:
+                        for waiting_tr in self.waiting_for_mapping_trans[lpa]:
+                            recorder.note_mapping_wait_end(
+                                waiting_tr.source_req,
+                                str(id(tr)),
+                                CURRENT_TIME(),
+                            )
                     self._mark_waiting_reads_failed(
                         [lpa],
                         f"Read request accessing invalid lpa in mapping page, lpa={lpa}",
@@ -1359,6 +1401,14 @@ class Address_Mapping_Unit:
                     continue
                 ppa = tr.response.data[idx]
                 if ppa == INVALID_PPA:
+                    recorder = REQUEST_LATENCY_RECORDER()
+                    if recorder is not None:
+                        for waiting_tr in self.waiting_for_mapping_trans[lpa]:
+                            recorder.note_mapping_wait_end(
+                                waiting_tr.source_req,
+                                str(id(tr)),
+                                CURRENT_TIME(),
+                            )
                     self._mark_waiting_reads_failed(
                         [lpa],
                         f"Read request accessing invalid ppa in mapping page, lpa={lpa}",
@@ -1373,6 +1423,13 @@ class Address_Mapping_Unit:
                 waiting_trs = self.waiting_for_mapping_trans[lpa]
                 debug_info(f"[AMU] <_handle_mapping_response> number of waiting trs: {len(waiting_trs)}")
                 for waiting_tr in waiting_trs:
+                    recorder = REQUEST_LATENCY_RECORDER()
+                    if recorder is not None:
+                        recorder.note_mapping_wait_end(
+                            waiting_tr.source_req,
+                            str(id(tr)),
+                            CURRENT_TIME(),
+                        )
                     if (
                         waiting_tr.source_req is not None
                         and waiting_tr.source_req.completion_sent
@@ -1445,6 +1502,13 @@ class Address_Mapping_Unit:
                 self.tsu.Submit_trans(tr)
             for lpa, waiting_tr, read_tr in mapping_waits:
                 self.waiting_for_mapping_trans[lpa].append(waiting_tr)
+                recorder = REQUEST_LATENCY_RECORDER()
+                if recorder is not None:
+                    recorder.note_mapping_wait_start(
+                        waiting_tr.source_req,
+                        str(id(read_tr)),
+                        CURRENT_TIME(),
+                    )
                 self.tsu.Submit_trans(read_tr)
         elif req.type == RequestType.WRITE:
             """process write requests
