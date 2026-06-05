@@ -1,6 +1,6 @@
 {
   "meta": {
-    "trace_path": "../Flash-Sim/test_case/test_trace.json",
+    "trace_path": "E:\\Files\\Li_Meng\\HBF\\Flash-Sim\\test_case\\test_trace.json",
     "trace_name": "test_trace.json",
     "final_time": 781000,
     "request_count": 489,
@@ -216,7 +216,7 @@
             "start": 200,
             "end": 10300,
             "source": "mapping_wait",
-            "wait_key": "140240339243856"
+            "wait_key": "2381306014288"
           }
         ],
         "tsu_queue_wait": [
@@ -649,7 +649,7 @@
             "start": 400,
             "end": 25500,
             "source": "mapping_wait",
-            "wait_key": "140240339242832"
+            "wait_key": "2381306011168"
           }
         ],
         "tsu_queue_wait": [
@@ -889,21 +889,21 @@
       "error_message": null,
       "scheduled_time": 50,
       "req_init_time": 50,
-      "host_completion_time": 10900,
-      "total_latency": 10850,
-      "host_total_latency": 10850,
+      "host_completion_time": 55900,
+      "total_latency": 55850,
+      "host_total_latency": 55850,
       "breakdown": {
         "host_sq_wait": 0,
         "host_dispatch": 0,
         "pcie_host_to_device": 650,
         "pcie_device_to_host": 100,
-        "amu_mapping_wait": 0,
-        "tsu_queue_wait": 0,
-        "phy_cmd_addr": 100,
+        "amu_mapping_wait": 45000,
+        "tsu_queue_wait": 34900,
+        "phy_cmd_addr": 200,
         "phy_data_in": 0,
-        "phy_array_exec": 5000,
-        "phy_data_out": 5000,
-        "overlap_latency": 0,
+        "phy_array_exec": 10000,
+        "phy_data_out": 10000,
+        "overlap_latency": 45000,
         "untracked_latency": 0
       },
       "intervals": {
@@ -921,20 +921,41 @@
         ],
         "pcie_device_to_host": [
           {
-            "start": 10800,
-            "end": 10900,
+            "start": 55800,
+            "end": 55900,
             "source": "pcie",
             "direction": "device_to_host",
             "message_type": "REQ_COMP",
             "transfer_bytes": 400
           }
         ],
-        "amu_mapping_wait": [],
-        "tsu_queue_wait": [],
-        "phy_cmd_addr": [
+        "amu_mapping_wait": [
           {
             "start": 700,
-            "end": 800,
+            "end": 45700,
+            "source": "mapping_wait",
+            "wait_key": "2381302384544"
+          }
+        ],
+        "tsu_queue_wait": [
+          {
+            "start": 700,
+            "end": 35600,
+            "source": "tsu",
+            "transaction_type": "MAPPING_READ"
+          }
+        ],
+        "phy_cmd_addr": [
+          {
+            "start": 35600,
+            "end": 35700,
+            "source": "phy",
+            "transaction_type": "MAPPING_READ",
+            "op_kind": "read"
+          },
+          {
+            "start": 45700,
+            "end": 45800,
             "source": "phy",
             "transaction_type": "USER_READ",
             "op_kind": "read"
@@ -943,8 +964,15 @@
         "phy_data_in": [],
         "phy_array_exec": [
           {
-            "start": 800,
-            "end": 5800,
+            "start": 35700,
+            "end": 40700,
+            "source": "phy",
+            "transaction_type": "MAPPING_READ",
+            "op_kind": "read"
+          },
+          {
+            "start": 45800,
+            "end": 50800,
             "source": "phy",
             "transaction_type": "USER_READ",
             "op_kind": "read"
@@ -952,15 +980,22 @@
         ],
         "phy_data_out": [
           {
-            "start": 5800,
-            "end": 10800,
+            "start": 40700,
+            "end": 45700,
+            "source": "phy",
+            "transaction_type": "MAPPING_READ",
+            "op_kind": "read"
+          },
+          {
+            "start": 50800,
+            "end": 55800,
             "source": "phy",
             "transaction_type": "USER_READ",
             "op_kind": "read"
           }
         ]
       },
-      "energy_uj": 0.31499999999999995,
+      "energy_uj": 0.6299999999999999,
       "persistence_energy_uj": 0.0,
       "data_cache_status": "miss",
       "persistence_status": "not_applicable",

@@ -47,3 +47,7 @@ Thumbs.db
 prompt.md
 arch_intro.md
 note.md
+
+# logs and reports
+output/
+report/
