@@ -369,16 +369,21 @@ class PHY():
         # ── Chip-internal operation complete ──────────────────────────────────
 
         elif ev_type == EventType.PHY_CHIP_READ_COMPLETE:
+            energy_stats.record_read(T_READ_LSB)
             self._handle_array_execution_finished(chip_id, die_id, "read", transactions)
 
         elif ev_type == EventType.PHY_CHIP_WRITE_COMPLETE:
+            energy_stats.record_write(T_PROG)
             self._handle_array_execution_finished(chip_id, die_id, "write", transactions)
 
         elif ev_type == EventType.PHY_CHIP_ERASE_COMPLETE:
+            energy_stats.record_erase(T_BERS)
             self._handle_array_execution_finished(chip_id, die_id, "erase", transactions)
         elif ev_type == EventType.PHY_CHIP_SEARCH_COMPLETE:
+            energy_stats.record_search(T_SEARCH)
             self._handle_array_execution_finished(chip_id, die_id, "search", transactions)
         elif ev_type == EventType.PHY_CHIP_COMPUTE_COMPLETE:
+            energy_stats.record_compute(T_COMPUTE)
             self._handle_array_execution_finished(chip_id, die_id, "compute", transactions)
 
         # ── Read data-out phase complete ──────────────────────────────────────

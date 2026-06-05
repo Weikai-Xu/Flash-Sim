@@ -164,6 +164,30 @@ T_BERS            = TimingConfig.t_bers   # chip internal erase latency (tBERS)
 T_SEARCH          = TimingConfig.t_search_lsb    # chip internal search latency (tSEARCH)
 T_COMPUTE         = TimingConfig.t_compute_lsb   # chip internal compute latency (tCOMPUTE)
 
+# ── Flash power constants (mW) ───────────────────────────────────────────────
+# 参考: Micron NAND datasheet (2018+, 64Gb+ MLC/TLC, 1.8V VCC) 和
+#       NANDFlashSim (ACM TOS 2016) 的 per-stage 能耗模型
+#
+# Per-stage 模型:
+#   E_read  = P_ARRAY × tR + P_IF × PHY_DATA_OUT_TIME   (CLE/ALE 忽略)
+#   E_prog  = P_IF × PHY_DATA_IN_TIME + P_ARRAY × tPROG  (CLE + status check 忽略)
+#   E_erase = P_ARRAY × tBERS                              (CLE + status check 忽略)
+#
+# 不同 page_type 的 tR/tPROG 在 TimingConfig 中区分，energy 自动跟随:
+#   LSB: t_r=75μs,  t_prog=750μs
+#   CSB: t_r=100μs, t_prog=1000μs
+#   MSB: t_r=150μs, t_prog=1500μs
+#
+# 参考值 (1.8V):
+P_ARRAY = 45      # NAND cell array power (mW), 1.8V × 25mA
+P_IF    = 18      # Flash I/O interface power (mW), 1.8V × 10mA
+
+# CIM 功耗 (估算值, 待实验校准)
+# SEARCH: 多条WL同时激活 → 阵列电流高于普通读
+P_SEARCH_ARRAY = 54  # search array power (mW), +20% vs P_ARRAY
+# COMPUTE: 多block并行激活 → 阵列电流大幅增加
+P_COMPUTE_ARRAY = 72 # compute array power (mW), +60% vs P_ARRAY
+
 # ── Suspension thresholds (ns) ───────────────────────────────────────────────
 REASONABLE_TIME_SUSPEND_WRITE_FOR_READ  = 100_000
 REASONABLE_TIME_SUSPEND_ERASE_FOR_READ  = 1_000_000
@@ -481,6 +505,78 @@ def SET_REQUEST_LATENCY_RECORDER(recorder: Any) -> None:
 
 def REQUEST_LATENCY_RECORDER() -> Any:
     return _request_latency_recorder
+
+
+# ── Energy statistics ─────────────────────────────────────────────────────────
+
+@dataclass
+class EnergyStats:
+    """仿真能耗统计, per-stage 模型 (参考 NANDFlashSim, ACM TOS 2016)。
+
+    Per-stage 分解:
+      E_read   = P_ARRAY × tR      + P_IF × PHY_DATA_OUT_TIME
+      E_prog   = P_IF × PHY_DATA_IN_TIME + P_ARRAY × tPROG
+      E_erase  = P_ARRAY × tBERS
+      E_search = P_SEARCH_ARRAY × tSEARCH  + P_IF × PHY_DATA_OUT_TIME
+      E_compute= P_COMPUTE_ARRAY × tCOMPUTE + P_IF × PHY_DATA_OUT_TIME
+
+    CLE/ALE 阶段功耗忽略 (<1% of total)。
+    不同 page_type 的 tR/tPROG 在 TimingConfig 中区分，energy 自动跟随。
+    """
+    read_energy:    float = 0.0   # total read energy (μJ)
+    write_energy:   float = 0.0   # total write/program energy (μJ)
+    erase_energy:   float = 0.0   # total erase energy (μJ)
+    search_energy:  float = 0.0   # total CIM search energy (μJ)
+    compute_energy: float = 0.0   # total CIM compute energy (μJ)
+    read_count:     int = 0       # count of read operations
+    write_count:    int = 0       # count of write operations
+    erase_count:    int = 0       # count of erase operations
+    search_count:   int = 0       # count of search operations
+    compute_count:  int = 0       # count of compute operations
+
+    def record_read(self, array_latency_ns: int) -> None:
+        """E_read = P_ARRAY × tR + P_IF × PHY_DATA_OUT_TIME (μJ)"""
+        self.read_energy += (P_ARRAY * array_latency_ns + P_IF * PHY_DATA_OUT_TIME) * 1e-6
+        self.read_count += 1
+
+    def record_write(self, array_latency_ns: int) -> None:
+        """E_prog = P_IF × PHY_DATA_IN_TIME + P_ARRAY × tPROG (μJ)"""
+        self.write_energy += (P_IF * PHY_DATA_IN_TIME + P_ARRAY * array_latency_ns) * 1e-6
+        self.write_count += 1
+
+    def record_erase(self, array_latency_ns: int) -> None:
+        """E_erase = P_ARRAY × tBERS (μJ)"""
+        self.erase_energy += P_ARRAY * array_latency_ns * 1e-6
+        self.erase_count += 1
+
+    def record_search(self, array_latency_ns: int) -> None:
+        """E_search = P_SEARCH_ARRAY × tSEARCH + P_IF × PHY_DATA_OUT_TIME (μJ)"""
+        self.search_energy += (P_SEARCH_ARRAY * array_latency_ns + P_IF * PHY_DATA_OUT_TIME) * 1e-6
+        self.search_count += 1
+
+    def record_compute(self, array_latency_ns: int) -> None:
+        """E_compute = P_COMPUTE_ARRAY × tCOMPUTE + P_IF × PHY_DATA_OUT_TIME (μJ)"""
+        self.compute_energy += (P_COMPUTE_ARRAY * array_latency_ns + P_IF * PHY_DATA_OUT_TIME) * 1e-6
+        self.compute_count += 1
+
+    def total_energy(self) -> float:
+        return (self.read_energy + self.write_energy + self.erase_energy
+                + self.search_energy + self.compute_energy)
+
+    def __str__(self) -> str:
+        return (
+            f"Energy (μJ): "
+            f"read={self.read_energy:.2f} (n={self.read_count}), "
+            f"write={self.write_energy:.2f} (n={self.write_count}), "
+            f"erase={self.erase_energy:.2f} (n={self.erase_count}), "
+            f"search={self.search_energy:.2f} (n={self.search_count}), "
+            f"compute={self.compute_energy:.2f} (n={self.compute_count}), "
+            f"total={self.total_energy():.2f}"
+        )
+
+
+# 全局能耗统计实例 (Engine 初始化时重置)
+energy_stats = EnergyStats()
 
 
 if __name__ == "__main__":
