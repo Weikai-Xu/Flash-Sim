@@ -112,6 +112,9 @@ class Block_Manager:
         self.lpa_protected_book = dict[int, Transaction]()
         self.mvpn_protected_book = dict[int, Transaction]()
         self.gc_wl_unit: GC_WL_Unit
+        # Write backpressure: per-plane waiting queue for writes blocked by pool shortage
+        self.waiting_writes: dict[int, list] = {}  # plane_id → [Transaction, ...]
+        self.STOP_SERVICING_WRITES_THRESHOLD = 1   # reserve ≥1 block for overwrites/GC
         print("Initializing block keeping book...")
         # 结构为：channel -> chip -> die -> plane -> [blockBKE, ...]，与 address 前 5 维一致
         self.block_keeping_book = [
@@ -139,9 +142,8 @@ class Block_Manager:
         if bke.write_frontier >= PAGE_PER_BLOCK:
             block_id = self.select_wl_aware_free_block(plane_address)
             if block_id < 0:
-                raise ValueError(
-                    f"[Block Manager] <get_write_frontier> plane {plane_id} has no eligible free blocks"
-                )
+                print(f"[Block Manager] <get_write_frontier> WARNING: plane {plane_id} has no eligible free blocks — returning None (caller should enforce backpressure)")
+                return None
             plane_bke.write_frontier_block = block_id
             bke = plane_bke.block_entries[block_id]
         page_id = bke.write_frontier
@@ -159,7 +161,10 @@ class Block_Manager:
         return address
 
     def allocate_gc_write_page(self, plane_address: FlashAddress, block_id: int | None = None) -> FlashAddress:
-        """Allocate a page within a specific block (for GC migration target)."""
+        """Allocate a page within a specific block (for GC migration target).
+
+        If no free block is available, proactively triggers GC and retries.
+        """
         channel_id = plane_address.channel
         chip_id = plane_address.chip
         die_id = plane_address.die
@@ -168,7 +173,14 @@ class Block_Manager:
         if block_id is None:
             block_id = self.select_wl_aware_free_block(plane_address)
         if block_id < 0:
-            raise ValueError("[Block_Manager] allocate_gc_write_page: no eligible destination block")
+            # No eligible free block — trigger GC and try once more
+            self.gc_wl_unit.check_gc()
+            block_id = self.select_wl_aware_free_block(plane_address)
+        if block_id < 0:
+            raise ValueError(
+                "[Block_Manager] allocate_gc_write_page: no eligible destination block "
+                "even after triggering GC — plane may be completely exhausted"
+            )
         bke = plane_bke.block_entries[block_id]
         if bke.write_frontier >= PAGE_PER_BLOCK:
             raise ValueError(f"[Block_Manager] allocate_gc_write_page: block {block_id} is full")
@@ -316,6 +328,70 @@ class Block_Manager:
             phy.clear_block_pages(addr)
         print(f"[Block Manager] <finalize_gc_erase> plane {addr.plane} block {addr.sub_plane} erased, free_block_num {len(plane_bke.free_block_pool)}, free_page_num {plane_bke.free_page_count}, valid_page_num {plane_bke.valid_page_count}, invalid_page_num {plane_bke.invalid_page_count}")
         self.gc_wl_unit.on_erase_complete(addr)
+        # Wake up writes blocked by backpressure on this plane
+        self._retry_waiting_writes(addr.plane)
+
+    # ── Write backpressure helpers ─────────────────────────────────────────
+
+    def get_free_pool_count(self, plane_addr: FlashAddress) -> int:
+        """Return the number of free blocks in *plane_addr*'s pool."""
+        return len(self.get_plane_bke(plane_addr).free_block_pool)
+
+    def enqueue_waiting_write(self, plane_id: int, tr: Transaction) -> None:
+        """Put *tr* into the per-plane waiting queue (blocked by backpressure)."""
+        if plane_id not in self.waiting_writes:
+            self.waiting_writes[plane_id] = []
+        self.waiting_writes[plane_id].append(tr)
+
+    def _retry_waiting_writes(self, plane_id: int) -> None:
+        """After GC returns a block to *plane_id*'s free pool, retry queued writes.
+
+        Re-runs the PPA-allocation path for each waiting transaction in FIFO order.
+        Stops when the pool falls back to or below the backpressure threshold.
+        """
+        if plane_id not in self.waiting_writes or not self.waiting_writes[plane_id]:
+            return
+        pending = self.waiting_writes[plane_id]
+        amu = self.gc_wl_unit.address_mapping_unit
+        tsu = self.gc_wl_unit.tsu
+        remaining = []
+        any_submitted = False
+        for tr in pending:
+            # *tr.address* was set to the plane address by get_plane_address_for_lpa
+            # before enqueuing; reuse it as the plane_addr for allocation.
+            plane_addr = tr.address
+            pool_size = self.get_free_pool_count(plane_addr)
+            if pool_size <= self.STOP_SERVICING_WRITES_THRESHOLD:
+                remaining.append(tr)
+                continue
+            ppa = self.get_write_frontier(plane_addr)
+            if ppa is None:
+                remaining.append(tr)
+                continue
+            tr.address = ppa
+            # Update CMT/GMT (mirrors translate_and_submit WRITE path)
+            if amu is not None and tr.source_req is not None:
+                domain = amu.domains[tr.source_req.sq_id]
+                if domain.cmt.is_cached(tr.lpa):
+                    invalidation_victim = domain.cmt.update_entry(tr.lpa, ppa, dirty=True)
+                    tr.invalidate_target = invalidation_victim
+                else:
+                    # GMT hit (CMT miss) or genuinely new LPA
+                    old_entry = amu.gmt.get(tr.lpa)
+                    if old_entry is not None:
+                        tr.invalidate_target = old_entry.address
+                    domain.cmt.add_entry(tr.lpa, ppa, dirty=True)
+            self._set_barrier(tr)
+            if tsu is not None:
+                tsu.Submit_trans(tr)
+                any_submitted = True
+        if remaining:
+            self.waiting_writes[plane_id] = remaining
+        else:
+            self.waiting_writes.pop(plane_id, None)
+        # Trigger TSU dispatch for any newly submitted transactions
+        if any_submitted and tsu is not None:
+            tsu.Schedule()
 
     def preconditioning(self, data_path: str = None, phy=None, amu=None) -> None:
         """
@@ -712,7 +788,7 @@ class TSU:
         self._onfly_schedule_req_no -= 1
         debug_info(f"[TSU] <Schedule> {self._onfly_schedule_req_no}")
         if self._onfly_schedule_req_no < 0:
-            raise RuntimeError("onfly_schedule_req_no should not be negative")
+            self._onfly_schedule_req_no = 0  # reset (drain can call Schedule extra times)
         if self._onfly_schedule_req_no > 0:
             return
         for ch in range(self.channel_no):
@@ -1518,27 +1594,52 @@ class Address_Mapping_Unit:
                     )
                 self.tsu.Submit_trans(read_tr)
         elif req.type == RequestType.WRITE:
-            """process write requests
-            for each tr in the write request, we need to:
-            1. get a mapping page of this tr
-            2. udpate the mapping page of this tr in cmt/gmt/gtd
+            """process write requests — with MQSim-style backpressure.
+
+            Before allocating PPA, check free_block_pool.  If the pool is at or
+            below STOP_SERVICING_WRITES_THRESHOLD, the transaction is queued in
+            Block_Manager.waiting_writes and will be retried when GC returns a block.
             """
             for tr in req.transaction_list:
-                page_address = self.get_plane_address_for_lpa(tr.lpa)
-                page_address = self.block_manager.get_write_frontier(page_address)
-                tr.address = page_address
+                plane_addr = self.get_plane_address_for_lpa(tr.lpa)
                 domain = self.domains[req.sq_id]
-                if not domain.cmt.is_cached(tr.lpa):
+                is_overwrite = domain.cmt.is_cached(tr.lpa) or (tr.lpa in self.gmt)
+                # ── Backpressure check (方案A / MQSim Stop_servicing_writes) ──
+                # Only backpressure FIRST-TIME writes.  Overwrites must be allowed
+                # through because they create invalid pages, which GC needs to
+                # select a victim and return blocks to the free pool.
+                if not is_overwrite:
+                    pool_size = self.block_manager.get_free_pool_count(plane_addr)
+                    if pool_size <= self.block_manager.STOP_SERVICING_WRITES_THRESHOLD:
+                        self.block_manager.enqueue_waiting_write(plane_addr.plane, tr)
+                        continue  # skip PPA allocation, CMT update, and TSU submission
+                page_address = self.block_manager.get_write_frontier(plane_addr)
+                if page_address is None:
+                    # Pool is genuinely empty — even overwrites must wait
+                    self.block_manager.enqueue_waiting_write(plane_addr.plane, tr)
+                    continue
+                tr.address = page_address
+                if not is_overwrite:
                     recorder = REQUEST_LATENCY_RECORDER()
                     if recorder is not None:
                         recorder.note_mapping_resolution(req, "uncached_write")
-                    domain.cmt.add_entry(tr.lpa, page_address, dirty=True) # dirty is true because a write tr must update the ppa of a lpa
-                else:
+                    domain.cmt.add_entry(tr.lpa, page_address, dirty=True)
+                elif domain.cmt.is_cached(tr.lpa):
                     recorder = REQUEST_LATENCY_RECORDER()
                     if recorder is not None:
                         recorder.note_mapping_resolution(req, "cmt_hit")
                     invalidation_victim_address = domain.cmt.update_entry(tr.lpa, page_address, dirty=True)
                     tr.invalidate_target = invalidation_victim_address
+                else:
+                    # GMT hit, CMT miss: old mapping was evicted from CMT.
+                    # Add fresh CMT entry, get old PPA from GMT for invalidation.
+                    recorder = REQUEST_LATENCY_RECORDER()
+                    if recorder is not None:
+                        recorder.note_mapping_resolution(req, "gmt_hit")
+                    old_entry = self.gmt.get(tr.lpa)
+                    if old_entry is not None:
+                        tr.invalidate_target = old_entry.address
+                    domain.cmt.add_entry(tr.lpa, page_address, dirty=True)
                 self.tsu.Submit_trans(tr)
                 self.block_manager._set_barrier(tr)
         # process search and compute requests, whose transaction ppa is decided in segment step
