@@ -53,8 +53,8 @@ class Engine:
     def Register_event(self, event_type, target, param, scheduled_time):
         event = SimEvent(type=event_type, target=target, time=scheduled_time, param=param)
         self.event_queue.put(event)
-        print(f"[Engine] Time = {self.current_time}, Register_event: type={event_type}, scheduled_time={scheduled_time}, target={target.__class__.__name__}, param={param}")
-        print()
+        # print(f"[Engine] Time = {self.current_time}, Register_event: type={event_type}, scheduled_time={scheduled_time}, target={target.__class__.__name__}, param={param}")
+        # print()
         return event
 
     def Execute_event(self):
@@ -67,7 +67,25 @@ class Engine:
     def Run(self):
         while not self.event_queue.empty():
             self.Execute_event()
-    
+        # After the event queue drains, force TSU to dispatch any remaining
+        # transactions (e.g. writes that were queued by _retry_waiting_writes
+        # but never dispatched because the event loop ended).
+        self._drain_tsu()
+
+    def _drain_tsu(self):
+        tsu = self.device.ftl.tsu
+        tsu._onfly_schedule_req_no = 0
+        tsu.Schedule()
+        for _ in range(100):
+            if self.event_queue.empty():
+                break
+            self.Execute_event()
+            tsu._onfly_schedule_req_no = 0
+            try:
+                tsu.Schedule()
+            except RuntimeError:
+                break
+
     def Get_current_time(self):
         return self.current_time
     

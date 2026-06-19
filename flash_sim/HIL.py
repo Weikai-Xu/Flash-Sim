@@ -353,7 +353,8 @@ class Data_Cache:
         return lines
 
     def free_lines(self) -> int:
-        return self._max_lines - len(self.lines)
+        # Each cache entry (LPA or static line) consumes one cache line.
+        return self._max_lines - len(self.user_entries) - len(self.static_entries)
 
     def clear(self):
         self.user_entries.clear()
@@ -467,15 +468,11 @@ class Cache_Manager:
 
     def _count_new_ready_lines(self, req: Request) -> int:
         if req.type == RequestType.WRITE:
-            new_ready_lines = 0
+            count = 0
             for tr in req.transaction_list:
-                entry = self.cache.user_entries.get(tr.lpa, self._new_user_entry(req.sq_id if req.sq_id is not None else 0))
-                for i in range(SECTOR_PER_PAGE):
-                    if i >= len(tr.bitmap) or tr.bitmap[i] == 0:
-                        continue
-                    if entry["ready_bitmap"][i] == 0:
-                        new_ready_lines += 1
-            return new_ready_lines
+                if tr.lpa not in self.cache.user_entries:
+                    count += 1
+            return count
 
         if req.type == RequestType.STATIC_WRITE:
             new_ready_lines = 0
@@ -539,8 +536,10 @@ class Cache_Manager:
     def cache_write(self, req: Request) -> list[Request]:
         if req.type not in (RequestType.WRITE, RequestType.STATIC_WRITE):
             return []
-        self.register_write_request(req)
+        # Count new lines BEFORE registering so we know the demand accurately.
         new_lines = self._count_new_ready_lines(req)
+        # Now register (creates entries so write_flush has something to flush).
+        self.register_write_request(req)
         if new_lines > self.cache.free_lines():
             self.write_flush()
         if new_lines > self.cache.free_lines():
@@ -655,8 +654,16 @@ class Cache_Manager:
                     report_origin_request_ids=origin_ids,
                 )
             )
+        # Only pop cache entries whose transactions were successfully submitted
+        # to TSU.  Transactions blocked by backpressure remain in
+        # Block_Manager.waiting_writes and must keep their cache data.
+        waiting_lpas: set = set()
+        for plane_waiting in self.hil.ftl.block_manager.waiting_writes.values():
+            for tr in plane_waiting:
+                waiting_lpas.add(tr.lpa)
         for lpa in flushable_user_pages:
-            self.cache.user_entries.pop(lpa, None)
+            if lpa not in waiting_lpas:
+                self.cache.user_entries.pop(lpa, None)
 
         static_flush_reqs: dict[int, list[Transaction]] = defaultdict(list)
         for entry in flushable_static_pages.values():
