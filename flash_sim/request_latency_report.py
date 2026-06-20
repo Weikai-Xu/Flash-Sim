@@ -36,20 +36,20 @@ BASE_STAGE_NAMES = (
 RECONCILIATION_STAGE_NAMES = ("overlap_latency", "untracked_latency")
 
 CSV_COLUMN_NAMES = (
-    "Issue时间",
-    "REQ类型",
-    "完成时间",
-    "SQ中等待时间",
-    "PCIe发送请求耗时",
-    "是否cache命中",
-    "Mapping处理时间",
-    "TSU中等待时间",
-    "阵列执行时间-指令/数据传输时间",
-    "阵列执行时间-阵列操作时间",
-    "PCIe返回状态耗时",
-    "PCIe返回数据耗时",
-    "请求处理能耗(μJ)",
-    "持久化能耗(μJ)",
+    "Issue Time",
+    "REQ Type",
+    "Finish Time",
+    "Time in SQ",
+    "PCIe Xfer",
+    "Cache Hit",
+    "Mapping",
+    "Time in TSU",
+    "ONFI Xfer",
+    "Array Exec",
+    "PCIe Xfer (CQ)",
+    "PCIe Xfer (Data)",
+    "Energy for req (μJ)",
+    "Energy for persistant storage (μJ)",
 )
 
 RESPONSE_DATA_MESSAGE_TYPES = {
@@ -787,23 +787,23 @@ class RequestLatencyRecorder:
         if rec.req_type in NON_MAPPING_REQUEST_TYPES:
             return "/"
         if rec.req_type == RequestType.READ.value and rec.data_cache_status == "full_hit":
-            return "是"
+            return "Yes"
         total_mapping_lookups = sum(rec.mapping_resolution_counts.values())
         if total_mapping_lookups == 0:
-            return "否"
+            return "No"
         if rec.mapping_resolution_counts["cmt_hit"] == total_mapping_lookups:
-            return "是"
-        return "否"
+            return "Yes"
+        return "No"
 
     def _cache_hit_value(self, rec: RequestLatencyState) -> str:
         if rec.req_type in NON_MAPPING_REQUEST_TYPES:
             return "/"
         total_mapping_lookups = sum(rec.mapping_resolution_counts.values())
         if total_mapping_lookups == 0:
-            return "否"
+            return "No"
         if rec.mapping_resolution_counts["cmt_hit"] == total_mapping_lookups:
-            return "是"
-        return "否"
+            return "Yes"
+        return "No"
 
     def _pcie_status_return_time(
         self,
