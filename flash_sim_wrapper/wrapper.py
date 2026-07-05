@@ -2,7 +2,7 @@ from .memory import AnalyticalMemoryBackend
 from ..types import DeviceType, LayerType
 
 
-class BaseDevice:
+class FlashSSDWrapper:
     yaml_key: str | None = None
 
     @property

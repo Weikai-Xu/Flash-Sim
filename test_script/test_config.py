@@ -1,7 +1,60 @@
 """Tests for configuration classes."""
 
 import pytest
+import flash_sim.common as common
+import flash_sim.config as config_module
 from flash_sim.config import TimingConfig, ParallelConfig, FlashConfig, FlashGeometry, FlashAddress, FlashTechnology
+
+
+AUTHORITATIVE_CONFIG_EXPORTS = (
+    "CHANNEL_NO",
+    "CHIP_PER_CHANNEL",
+    "DIE_PER_CHIP",
+    "PLANE_PER_DIE",
+    "BLOCK_PER_PLANE",
+    "SL_PER_BLOCK",
+    "SSL_PER_SL",
+    "PAGE_PER_BLOCK",
+    "SECTOR_PER_PAGE",
+    "COMPUTE_MAX_PARALLEL_SL",
+    "SEARCH_MAX_PARALLEL_WL",
+    "PAGE_NO_PER_SEARCH_BANK",
+    "PAGE_NO_PER_COMPUTE_BANK",
+    "COMPUTE_BANK_PER_PLANE",
+    "SEARCH_BANK_PER_PLANE",
+    "STATIC_CHIP_PER_CHANNEL",
+    "STATIC_BASE_LHA",
+    "CQ_ENTRY_SIZE_BASIC",
+    "SQ_ENTRY_SIZE",
+    "CMT_TYPE",
+    "CMT_SIZE",
+    "LPA_NO_PER_SECTOR",
+    "LPA_NO_PER_MAPPING_PAGE",
+    "NUM_OF_QUEUES",
+    "GC_WL_MANAGER_FREE_BLOCK_POOL_THRESHOLD",
+    "SECTOR_SIZE_BYTES",
+    "DATA_CACHE_LINE_SIZE",
+    "DATA_CACHE_CAP",
+    "PCIE_INTERFACE_BANDWIDTH_BYTES_PER_NS",
+    "PCIE_PACKET_OVERHEAD_BYTES",
+    "PHY_CMD_ADDR_TIME",
+    "PHY_DATA_IN_TIME",
+    "PHY_DATA_OUT_TIME",
+    "DEFAULT_ONFI_TIMING",
+    "ONFI_CHANNEL_WIDTH_BYTES",
+    "T_READ_LSB",
+    "T_PROG",
+    "T_BERS",
+    "T_SEARCH",
+    "T_COMPUTE",
+    "P_ARRAY",
+    "P_IF",
+    "P_SEARCH_ARRAY",
+    "P_COMPUTE_ARRAY",
+    "REASONABLE_TIME_SUSPEND_WRITE_FOR_READ",
+    "REASONABLE_TIME_SUSPEND_ERASE_FOR_READ",
+    "REASONABLE_TIME_SUSPEND_ERASE_FOR_WRITE",
+)
 
 
 class TestTimingConfig:
@@ -629,3 +682,78 @@ class TestFlashConfig3D:
         assert config.geometry.planes_per_die == 4
         assert config.geometry.dies == 4
         assert config.geometry.pages_per_block == 512  # 128 * 4
+
+
+class TestUnifiedConfigEntryPoint:
+    """Tests for the config/common compatibility boundary."""
+
+    def test_authoritative_config_exports_are_importable(self):
+        """Moved configuration constants are available from flash_sim.config."""
+        for name in AUTHORITATIVE_CONFIG_EXPORTS:
+            assert hasattr(config_module, name), name
+
+    def test_common_compatibility_exports_match_config(self):
+        """Legacy common exports mirror the authoritative config values."""
+        for name in AUTHORITATIVE_CONFIG_EXPORTS:
+            assert hasattr(common, name), name
+            assert getattr(common, name) == getattr(config_module, name), name
+
+    def test_event_runtime_geometry_backed_constants_are_aligned(self):
+        """Event-runtime geometry constants come from make_event_runtime_geometry."""
+        geometry = config_module.make_event_runtime_geometry()
+
+        assert config_module.CHANNEL_NO == geometry.channel_no
+        assert config_module.CHIP_PER_CHANNEL == geometry.chip_per_channel
+        assert config_module.DIE_PER_CHIP == geometry.dies
+        assert config_module.PLANE_PER_DIE == geometry.planes_per_die
+        assert config_module.BLOCK_PER_PLANE == geometry.blocks_per_plane
+        assert config_module.SL_PER_BLOCK == geometry.sl_per_block
+        assert config_module.SSL_PER_SL == geometry.ssl_per_sl
+        assert config_module.PAGE_PER_BLOCK == geometry.pages_per_block
+        assert config_module.COMPUTE_MAX_PARALLEL_SL == geometry.compute_max_parallel_sl
+        assert config_module.SEARCH_MAX_PARALLEL_WL == geometry.search_max_parallel_wl
+        assert config_module.STATIC_CHIP_PER_CHANNEL == geometry.static_chip_per_channel
+
+    def test_event_runtime_derived_values_use_authoritative_constants(self):
+        """Bank counts and static-region base use config-owned values."""
+        assert config_module.PAGE_NO_PER_SEARCH_BANK == config_module.SEARCH_MAX_PARALLEL_WL
+        assert (
+            config_module.PAGE_NO_PER_COMPUTE_BANK
+            == config_module.COMPUTE_MAX_PARALLEL_SL * config_module.SSL_PER_SL
+        )
+        assert (
+            config_module.COMPUTE_BANK_PER_PLANE
+            == config_module.BLOCK_PER_PLANE
+            * config_module.SL_PER_BLOCK
+            // config_module.COMPUTE_MAX_PARALLEL_SL
+        )
+        assert (
+            config_module.SEARCH_BANK_PER_PLANE
+            == config_module.SSL_PER_SL
+            * config_module.SL_PER_BLOCK
+            * config_module.BLOCK_PER_PLANE
+        )
+
+        expected_static_base = (
+            config_module.SECTOR_PER_PAGE
+            * config_module.PAGE_PER_BLOCK
+            * config_module.BLOCK_PER_PLANE
+            * config_module.PLANE_PER_DIE
+            * config_module.DIE_PER_CHIP
+            * config_module.CHANNEL_NO
+            * (config_module.CHIP_PER_CHANNEL - config_module.STATIC_CHIP_PER_CHANNEL)
+        )
+        assert config_module.STATIC_BASE_LHA == expected_static_base
+
+    def test_common_event_domain_imports_still_work(self):
+        """Event-domain classes and helpers remain in flash_sim.common."""
+        request = common.Request(type=common.RequestType.READ, lha_start=0, size=1)
+        address = common.FlashAddress(channel=0, chip=0, die=0, plane=0, sub_plane=0, page=0)
+        event = common.SimEvent(type=common.EventType.REQ_INIT, target=request, time=0)
+
+        assert request.is_serviced()
+        assert address.channel == 0
+        assert event.type is common.EventType.REQ_INIT
+        assert common.MessageType.REQ_COMP.value == "REQ_COMP"
+        assert callable(common.CURRENT_TIME)
+        assert callable(common.Register_event)

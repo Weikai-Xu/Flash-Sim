@@ -566,6 +566,84 @@ class OnfiTimingConfig:
         return self.t_dsc
 
 
+# ----- Event-driven runtime configuration exports -----
+# These module-level names preserve the legacy public constants historically
+# exported from flash_sim.common. New code should import them from this module.
+EVENT_RUNTIME_GEOMETRY = make_event_runtime_geometry()
+
+CHANNEL_NO = EVENT_RUNTIME_GEOMETRY.channel_no
+CHIP_PER_CHANNEL = EVENT_RUNTIME_GEOMETRY.chip_per_channel
+DIE_PER_CHIP = EVENT_RUNTIME_GEOMETRY.dies
+PLANE_PER_DIE = EVENT_RUNTIME_GEOMETRY.planes_per_die
+BLOCK_PER_PLANE = EVENT_RUNTIME_GEOMETRY.blocks_per_plane
+SL_PER_BLOCK = EVENT_RUNTIME_GEOMETRY.sl_per_block
+SSL_PER_SL = EVENT_RUNTIME_GEOMETRY.ssl_per_sl
+PAGE_PER_BLOCK = EVENT_RUNTIME_GEOMETRY.pages_per_block
+
+# Event-driven request payload granularity. This intentionally remains distinct
+# from FlashGeometry.sector_per_page to preserve existing trace/request behavior.
+EVENT_RUNTIME_SECTOR_PER_PAGE = 64
+SECTOR_PER_PAGE = EVENT_RUNTIME_SECTOR_PER_PAGE
+
+COMPUTE_MAX_PARALLEL_SL = EVENT_RUNTIME_GEOMETRY.compute_max_parallel_sl
+SEARCH_MAX_PARALLEL_WL = EVENT_RUNTIME_GEOMETRY.search_max_parallel_wl
+PAGE_NO_PER_SEARCH_BANK = SEARCH_MAX_PARALLEL_WL
+PAGE_NO_PER_COMPUTE_BANK = COMPUTE_MAX_PARALLEL_SL * SSL_PER_SL
+COMPUTE_BANK_PER_PLANE = BLOCK_PER_PLANE * SL_PER_BLOCK // COMPUTE_MAX_PARALLEL_SL
+SEARCH_BANK_PER_PLANE = SSL_PER_SL * SL_PER_BLOCK * BLOCK_PER_PLANE
+
+STATIC_CHIP_PER_CHANNEL = EVENT_RUNTIME_GEOMETRY.static_chip_per_channel
+STATIC_BASE_LHA = (
+    SECTOR_PER_PAGE
+    * PAGE_PER_BLOCK
+    * BLOCK_PER_PLANE
+    * PLANE_PER_DIE
+    * DIE_PER_CHIP
+    * CHANNEL_NO
+    * (CHIP_PER_CHANNEL - STATIC_CHIP_PER_CHANNEL)
+)
+
+# Host/controller and FTL policy constants.
+CQ_ENTRY_SIZE_BASIC = 128
+SQ_ENTRY_SIZE = 128
+CMT_TYPE = "shared"
+CMT_SIZE = 64
+LPA_NO_PER_SECTOR = 4
+LPA_NO_PER_MAPPING_PAGE = LPA_NO_PER_SECTOR * SECTOR_PER_PAGE
+NUM_OF_QUEUES = 8
+GC_WL_MANAGER_FREE_BLOCK_POOL_THRESHOLD = 3
+SECTOR_SIZE_BYTES = 64
+DATA_CACHE_LINE_SIZE = 64
+DATA_CACHE_CAP = 4096
+
+# PCIe timing config.
+PCIE_INTERFACE_BANDWIDTH_BYTES_PER_NS = 4
+PCIE_PACKET_OVERHEAD_BYTES = 400
+
+# Flash timing aliases used by the event-driven PHY path.
+PHY_CMD_ADDR_TIME = 100
+PHY_DATA_IN_TIME = 5_000
+PHY_DATA_OUT_TIME = 5_000
+DEFAULT_ONFI_TIMING = OnfiTimingConfig()
+ONFI_CHANNEL_WIDTH_BYTES = DEFAULT_ONFI_TIMING.channel_width_bytes
+T_READ_LSB = TimingConfig.t_r_lsb
+T_PROG = TimingConfig.t_prog_lsb
+T_BERS = TimingConfig.t_bers
+T_SEARCH = TimingConfig.t_search_lsb
+T_COMPUTE = TimingConfig.t_compute_lsb
+
+# Flash power constants (mW).
+P_ARRAY = 45
+P_IF = 18
+P_SEARCH_ARRAY = 54
+P_COMPUTE_ARRAY = 72
+
+# Suspension thresholds (ns).
+REASONABLE_TIME_SUSPEND_WRITE_FOR_READ = 100_000
+REASONABLE_TIME_SUSPEND_ERASE_FOR_READ = 1_000_000
+REASONABLE_TIME_SUSPEND_ERASE_FOR_WRITE = 1_000_000
+
+
 @dataclass
 class ParallelConfig:
     """Parallelism configuration for search and compute operations."""

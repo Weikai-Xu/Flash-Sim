@@ -6,9 +6,115 @@ import time
 from typing import Any, List, Optional
 from enum import Enum
 try:
-    from .config import OnfiTimingConfig, TimingConfig, make_event_runtime_geometry
+    from .config import (
+        BLOCK_PER_PLANE,
+        CHANNEL_NO,
+        CHIP_PER_CHANNEL,
+        CMT_SIZE,
+        CMT_TYPE,
+        COMPUTE_BANK_PER_PLANE,
+        COMPUTE_MAX_PARALLEL_SL,
+        CQ_ENTRY_SIZE_BASIC,
+        DATA_CACHE_CAP,
+        DATA_CACHE_LINE_SIZE,
+        DEFAULT_ONFI_TIMING,
+        DIE_PER_CHIP,
+        EVENT_RUNTIME_GEOMETRY,
+        GC_WL_MANAGER_FREE_BLOCK_POOL_THRESHOLD,
+        LPA_NO_PER_MAPPING_PAGE,
+        LPA_NO_PER_SECTOR,
+        NUM_OF_QUEUES,
+        ONFI_CHANNEL_WIDTH_BYTES,
+        PAGE_NO_PER_COMPUTE_BANK,
+        PAGE_NO_PER_SEARCH_BANK,
+        PAGE_PER_BLOCK,
+        PCIE_INTERFACE_BANDWIDTH_BYTES_PER_NS,
+        PCIE_PACKET_OVERHEAD_BYTES,
+        PHY_CMD_ADDR_TIME,
+        PHY_DATA_IN_TIME,
+        PHY_DATA_OUT_TIME,
+        PLANE_PER_DIE,
+        P_ARRAY,
+        P_COMPUTE_ARRAY,
+        P_IF,
+        P_SEARCH_ARRAY,
+        REASONABLE_TIME_SUSPEND_ERASE_FOR_READ,
+        REASONABLE_TIME_SUSPEND_ERASE_FOR_WRITE,
+        REASONABLE_TIME_SUSPEND_WRITE_FOR_READ,
+        SEARCH_BANK_PER_PLANE,
+        SEARCH_MAX_PARALLEL_WL,
+        SECTOR_PER_PAGE,
+        SECTOR_SIZE_BYTES,
+        SL_PER_BLOCK,
+        SQ_ENTRY_SIZE,
+        SSL_PER_SL,
+        STATIC_BASE_LHA,
+        STATIC_CHIP_PER_CHANNEL,
+        T_BERS,
+        T_COMPUTE,
+        T_PROG,
+        T_READ_LSB,
+        T_SEARCH,
+        OnfiTimingConfig,
+        TimingConfig,
+        make_event_runtime_geometry,
+    )
 except ImportError:
-    from config import OnfiTimingConfig, TimingConfig, make_event_runtime_geometry
+    from config import (
+        BLOCK_PER_PLANE,
+        CHANNEL_NO,
+        CHIP_PER_CHANNEL,
+        CMT_SIZE,
+        CMT_TYPE,
+        COMPUTE_BANK_PER_PLANE,
+        COMPUTE_MAX_PARALLEL_SL,
+        CQ_ENTRY_SIZE_BASIC,
+        DATA_CACHE_CAP,
+        DATA_CACHE_LINE_SIZE,
+        DEFAULT_ONFI_TIMING,
+        DIE_PER_CHIP,
+        EVENT_RUNTIME_GEOMETRY,
+        GC_WL_MANAGER_FREE_BLOCK_POOL_THRESHOLD,
+        LPA_NO_PER_MAPPING_PAGE,
+        LPA_NO_PER_SECTOR,
+        NUM_OF_QUEUES,
+        ONFI_CHANNEL_WIDTH_BYTES,
+        PAGE_NO_PER_COMPUTE_BANK,
+        PAGE_NO_PER_SEARCH_BANK,
+        PAGE_PER_BLOCK,
+        PCIE_INTERFACE_BANDWIDTH_BYTES_PER_NS,
+        PCIE_PACKET_OVERHEAD_BYTES,
+        PHY_CMD_ADDR_TIME,
+        PHY_DATA_IN_TIME,
+        PHY_DATA_OUT_TIME,
+        PLANE_PER_DIE,
+        P_ARRAY,
+        P_COMPUTE_ARRAY,
+        P_IF,
+        P_SEARCH_ARRAY,
+        REASONABLE_TIME_SUSPEND_ERASE_FOR_READ,
+        REASONABLE_TIME_SUSPEND_ERASE_FOR_WRITE,
+        REASONABLE_TIME_SUSPEND_WRITE_FOR_READ,
+        SEARCH_BANK_PER_PLANE,
+        SEARCH_MAX_PARALLEL_WL,
+        SECTOR_PER_PAGE,
+        SECTOR_SIZE_BYTES,
+        SL_PER_BLOCK,
+        SQ_ENTRY_SIZE,
+        SSL_PER_SL,
+        STATIC_BASE_LHA,
+        STATIC_CHIP_PER_CHANNEL,
+        T_BERS,
+        T_COMPUTE,
+        T_PROG,
+        T_READ_LSB,
+        T_SEARCH,
+        OnfiTimingConfig,
+        TimingConfig,
+        make_event_runtime_geometry,
+    )
+
+geometry = EVENT_RUNTIME_GEOMETRY
 
 class EventType(Enum):
     # ----- 事件类型常量 -----
@@ -99,73 +205,31 @@ class TransactionType(Enum):
     GC_READ = "GC_READ"
 
 # Host Memory config
-CQ_ENTRY_SIZE_BASIC = 128
-SQ_ENTRY_SIZE = 128
 
 # FTL CMT config
-CMT_TYPE = "shared"
 
 # 硬件配置
-geometry = make_event_runtime_geometry()
-CHANNEL_NO = geometry.channel_no
-CHIP_PER_CHANNEL = geometry.chip_per_channel
-DIE_PER_CHIP = geometry.dies
-PLANE_PER_DIE = geometry.planes_per_die
-BLOCK_PER_PLANE = geometry.blocks_per_plane
-SL_PER_BLOCK = geometry.sl_per_block
-SSL_PER_SL = geometry.ssl_per_sl
-PAGE_PER_BLOCK = geometry.pages_per_block
-SECTOR_PER_PAGE = 64
 
-COMPUTE_MAX_PARALLEL_SL = 256
-SEARCH_MAX_PARALLEL_WL = 256
-PAGE_NO_PER_SEARCH_BANK = SEARCH_MAX_PARALLEL_WL
-PAGE_NO_PER_COMPUTE_BANK = COMPUTE_MAX_PARALLEL_SL * SSL_PER_SL
-COMPUTE_BANK_PER_PLANE = BLOCK_PER_PLANE * SL_PER_BLOCK // COMPUTE_MAX_PARALLEL_SL
-SEARCH_BANK_PER_PLANE = SSL_PER_SL * SL_PER_BLOCK * BLOCK_PER_PLANE
 
-STATIC_CHIP_PER_CHANNEL = 1
-STATIC_BASE_LHA = SECTOR_PER_PAGE * PAGE_PER_BLOCK * BLOCK_PER_PLANE * PLANE_PER_DIE \
-    * DIE_PER_CHIP * CHANNEL_NO * (CHIP_PER_CHANNEL - STATIC_CHIP_PER_CHANNEL) # 1610612736
 
 
 # ----- 常量 -----
-CMT_SIZE = 64
-LPA_NO_PER_SECTOR = 4
-LPA_NO_PER_MAPPING_PAGE = LPA_NO_PER_SECTOR * SECTOR_PER_PAGE # 256
-NUM_OF_QUEUES = 8
 VIRTUAL_DATA_ADDRESS = 0xFFFFFFFFFFFFFFFF
-GC_WL_MANAGER_FREE_BLOCK_POOL_THRESHOLD = 3
 INVALID_LPA = -1
 INVALID_MVPN = -1
 INVALID_DATA = -1
 INVALID_PPA = -1
-SECTOR_SIZE_BYTES = 64
-DATA_CACHE_LINE_SIZE = 64
-DATA_CACHE_CAP = 4096
 
 # PCIe timing config
 # Units:
 # - PCIE_INTERFACE_BANDWIDTH_BYTES_PER_NS: bytes transferred per nanosecond
 # - PCIE_PACKET_OVERHEAD_BYTES: fixed per-message packaging overhead in bytes
-PCIE_INTERFACE_BANDWIDTH_BYTES_PER_NS = 4
-PCIE_PACKET_OVERHEAD_BYTES = 400
 
 # debug_info = print
 def debug_info(*args, **kwargs):
     pass
 
 # ── Flash timing constants (nanoseconds) ────────────────────────────────────
-PHY_CMD_ADDR_TIME = 100          # command + address bus transfer time
-PHY_DATA_IN_TIME  = 5_000        # data transfer from controller to chip (write)
-PHY_DATA_OUT_TIME = 5_000        # data transfer from chip to controller (read)
-DEFAULT_ONFI_TIMING = OnfiTimingConfig()
-ONFI_CHANNEL_WIDTH_BYTES = DEFAULT_ONFI_TIMING.channel_width_bytes
-T_READ_LSB        = TimingConfig.t_r_lsb       # chip internal LSB read latency (tR)
-T_PROG            = TimingConfig.t_prog_lsb    # chip internal program latency (tPROG)
-T_BERS            = TimingConfig.t_bers   # chip internal erase latency (tBERS)
-T_SEARCH          = TimingConfig.t_search_lsb    # chip internal search latency (tSEARCH)
-T_COMPUTE         = TimingConfig.t_compute_lsb   # chip internal compute latency (tCOMPUTE)
 
 # ── Flash power constants (mW) ───────────────────────────────────────────────
 # 参考: Micron NAND datasheet (2018+, 64Gb+ MLC/TLC, 1.8V VCC) 和
@@ -182,19 +246,12 @@ T_COMPUTE         = TimingConfig.t_compute_lsb   # chip internal compute latency
 #   MSB: t_r=150μs, t_prog=1500μs
 #
 # 参考值 (1.8V):
-P_ARRAY = 45      # NAND cell array power (mW), 1.8V × 25mA
-P_IF    = 18      # Flash I/O interface power (mW), 1.8V × 10mA
 
 # CIM 功耗 (估算值, 待实验校准)
 # SEARCH: 多条WL同时激活 → 阵列电流高于普通读
-P_SEARCH_ARRAY = 54  # search array power (mW), +20% vs P_ARRAY
 # COMPUTE: 多block并行激活 → 阵列电流大幅增加
-P_COMPUTE_ARRAY = 72 # compute array power (mW), +60% vs P_ARRAY
 
 # ── Suspension thresholds (ns) ───────────────────────────────────────────────
-REASONABLE_TIME_SUSPEND_WRITE_FOR_READ  = 100_000
-REASONABLE_TIME_SUSPEND_ERASE_FOR_READ  = 1_000_000
-REASONABLE_TIME_SUSPEND_ERASE_FOR_WRITE = 1_000_000
 
 # ----- Die Status ----------
 class DieStatus(Enum):
