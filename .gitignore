@@ -54,6 +54,9 @@ result_report.md
 output/
 report/
 
+# validation outputs
+validation/out
+
 # Local agent/session files
 .*/
 SESSION_BACKGROUND.md
