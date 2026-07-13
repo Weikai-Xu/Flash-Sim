@@ -130,21 +130,23 @@ class Block_Manager:
         if not QUIET:
             print("Block Manager construction validation complete.")
 
-    def __init__(self,
-                 channel_no=CHANNEL_NO,
-                 chip_no_per_channel=CHIP_PER_CHANNEL,
-                 die_no_per_chip=DIE_PER_CHIP,
-                 plane_no_per_die=PLANE_PER_DIE,
-                 block_no_per_plane=BLOCK_PER_PLANE,
-                 pages_per_block=PAGE_PER_BLOCK):
+    def __init__(
+        self,
+        channel_no=None,
+        chip_no_per_channel=None,
+        die_no_per_chip=None,
+        plane_no_per_die=None,
+        block_no_per_plane=None,
+        pages_per_block=None,
+    ):
         if not QUIET:
             print("Initializing Block Manager...")
-        self.channel_no = channel_no
-        self.chip_no_per_channel = chip_no_per_channel
-        self.die_no_per_chip = die_no_per_chip
-        self.plane_no_per_die = plane_no_per_die
-        self.block_no_per_plane = block_no_per_plane
-        self.pages_per_block = pages_per_block
+        self.channel_no = CHANNEL_NO if channel_no is None else channel_no
+        self.chip_no_per_channel = CHIP_PER_CHANNEL if chip_no_per_channel is None else chip_no_per_channel
+        self.die_no_per_chip = DIE_PER_CHIP if die_no_per_chip is None else die_no_per_chip
+        self.plane_no_per_die = PLANE_PER_DIE if plane_no_per_die is None else plane_no_per_die
+        self.block_no_per_plane = BLOCK_PER_PLANE if block_no_per_plane is None else block_no_per_plane
+        self.pages_per_block = PAGE_PER_BLOCK if pages_per_block is None else pages_per_block
         self._construction_valid = False
         self.lpa_protected_book = dict[int, Transaction]()
         self.lpa_barrier_waiters: dict[int, list[Transaction]] = {}
@@ -165,13 +167,13 @@ class Block_Manager:
             [
                 [
                     [
-                        PlaneBKE() for _ in range(plane_no_per_die)
+                        PlaneBKE() for _ in range(self.plane_no_per_die)
                     ]
-                    for _ in range(die_no_per_chip)
+                    for _ in range(self.die_no_per_chip)
                 ]
-                for _ in range(chip_no_per_channel)
+                for _ in range(self.chip_no_per_channel)
             ]
-            for _ in range(channel_no)
+            for _ in range(self.channel_no)
         ]
         if not QUIET:
             print("Block Manager initialization complete.")
@@ -224,6 +226,101 @@ class Block_Manager:
     @staticmethod
     def _plane_key(addr: FlashAddress) -> PlaneKey:
         return (addr.channel, addr.chip, addr.die, addr.plane)
+
+    @staticmethod
+    def _expand_required_range(
+        item: Any,
+        *,
+        sector_per_page: int = SECTOR_PER_PAGE,
+        ranges_are_lha: bool = True,
+    ) -> list[int]:
+        if isinstance(item, dict):
+            if "lpa" in item:
+                return [int(item["lpa"])]
+            if "start_lpa" in item:
+                start_lpa = int(item["start_lpa"])
+                if "end_lpa" in item:
+                    end_lpa = int(item["end_lpa"])
+                    if end_lpa < start_lpa:
+                        return []
+                    return list(range(start_lpa, end_lpa + 1))
+                count = int(item.get("page_count", item.get("size_lpa", item.get("size", 1))) or 0)
+                return list(range(start_lpa, start_lpa + max(0, count)))
+            if "start_lha" in item:
+                start_lha = int(item["start_lha"])
+                sector_count = int(item.get("size", item.get("sector_count", 0)) or 0)
+                if sector_count <= 0:
+                    return []
+                end_lha = start_lha + sector_count - 1
+                return list(range(start_lha // sector_per_page, end_lha // sector_per_page + 1))
+            raise ValueError(f"required range is missing lpa/start_lpa/start_lha: {item!r}")
+
+        if isinstance(item, (tuple, list)) and len(item) == 2:
+            start = int(item[0])
+            count = int(item[1])
+            if count <= 0:
+                return []
+            if ranges_are_lha:
+                end_lha = start + count - 1
+                return list(range(start // sector_per_page, end_lha // sector_per_page + 1))
+            return list(range(start, start + count))
+
+        return [int(item)]
+
+    def precondition_required_ranges(
+        self,
+        required_ranges: list[Any],
+        *,
+        phy=None,
+        amu=None,
+        sector_per_page: int = SECTOR_PER_PAGE,
+        ranges_are_lha: bool = True,
+        data_value: int = 0xAA,
+    ) -> dict[str, Any]:
+        """Precondition exactly the required logical pages and warm CMT to capacity."""
+
+        if amu is None:
+            try:
+                amu = self.gc_wl_unit.address_mapping_unit
+            except AttributeError:
+                amu = None
+        if amu is None:
+            raise RuntimeError("[Block Manager] precondition_required_ranges: AMU is required")
+
+        required_lpas: set[int] = set()
+        invalid_items: list[tuple[Any, str]] = []
+        for item in required_ranges or []:
+            lpas = self._expand_required_range(
+                item,
+                sector_per_page=sector_per_page,
+                ranges_are_lha=ranges_are_lha,
+            )
+            for lpa in lpas:
+                try:
+                    amu.get_plane_address_for_lpa(lpa)
+                except Exception as exc:
+                    invalid_items.append((item, str(exc)))
+                    break
+                required_lpas.add(lpa)
+
+        if invalid_items:
+            item, reason = invalid_items[0]
+            raise ValueError(
+                f"required flashsim address range is outside capacity: {item!r}; {reason}"
+            )
+
+        plan = {
+            "lpas": sorted(required_lpas),
+            "data_value": data_value,
+            "warm_cmt_to_capacity": True,
+            "stats": {
+                "mode": "required-ranges",
+                "required_mapping_count": len(required_lpas),
+                "required_range_count": len(required_ranges or []),
+            },
+        }
+        self.preconditioning(data_path=plan, phy=phy, amu=amu)
+        return dict(self.last_precondition_stats)
 
     def _wear_skew_for_plane(self, plane_bke: PlaneBKE) -> int:
         levels = [entry.wl_level for entry in plane_bke.block_entries]
@@ -709,6 +806,8 @@ class Block_Manager:
         input_stats: dict[str, Any] = {}
         default_valid_bitmap = None
         default_data_value = 0xAA
+        warm_cmt_to_capacity = False
+        cmt_warm_count = None
         if data_path is None:
             base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             data_path = os.path.join(base, 'pre_data', 'precondition_data.json')
@@ -725,6 +824,9 @@ class Block_Manager:
             print("=" * 80)
         if isinstance(data_path, dict):
             input_stats = dict(data_path.get("stats") or {})
+            warm_cmt_to_capacity = bool(data_path.get("warm_cmt_to_capacity", False))
+            if data_path.get("cmt_warm_count") is not None:
+                cmt_warm_count = int(data_path.get("cmt_warm_count"))
             if "lpas" in data_path:
                 precondition_data = list(data_path.get("lpas") or [])
             else:
@@ -809,6 +911,7 @@ class Block_Manager:
                             ),
                             default_valid_bitmap=default_valid_bitmap,
                             default_data_value=default_data_value,
+                            reserve_blocks=0 if warm_cmt_to_capacity else None,
                         )
                         plane_results.append(result)
 
@@ -837,7 +940,13 @@ class Block_Manager:
 
         # 3. 随机选取部分user lpa-ppa预热CMT
         user_lpa_list = sorted(user_lpa_to_ppa.keys())
-        cmt_num = int(cmt_capacity * cmt_ratio)
+        if cmt_warm_count is not None:
+            cmt_num = cmt_warm_count
+        elif warm_cmt_to_capacity:
+            cmt_num = cmt_capacity
+        else:
+            cmt_num = int(cmt_capacity * cmt_ratio)
+        cmt_num = max(0, min(cmt_capacity, int(cmt_num)))
         for lpa in user_lpa_list[:cmt_num]:
             addr = user_lpa_to_ppa[lpa]
             amu.cmt.add_entry(lpa, addr, dirty=False)
@@ -894,6 +1003,7 @@ class Block_Manager:
         metadata_blocks: set[int] | None = None,
         default_valid_bitmap: Any = None,
         default_data_value: int = 0xAA,
+        reserve_blocks: int | None = None,
     ) -> dict[str, Any]:
         """
         对单个 plane 进行数据驱动的预处理。
@@ -948,9 +1058,11 @@ class Block_Manager:
         num_page = len(items)
         input_pages = num_page
 
-        # Use at most max_blocks for data; keep gc_threshold + 1 blocks reserved
-        _gc_threshold = GC_WL_MANAGER_FREE_BLOCK_POOL_THRESHOLD
-        max_blocks = max(0, len(allocatable_blocks) - _gc_threshold - 1)
+        # Use at most max_blocks for data. Required-range preconditioning may
+        # consume the full plane so every requested mapping is readable.
+        if reserve_blocks is None:
+            reserve_blocks = GC_WL_MANAGER_FREE_BLOCK_POOL_THRESHOLD + 1
+        max_blocks = max(0, len(allocatable_blocks) - max(0, int(reserve_blocks)))
         max_valid = max_blocks * pages_per_block
         if num_page > max_valid:
             dropped = num_page - max_valid

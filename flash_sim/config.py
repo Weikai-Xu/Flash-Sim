@@ -1,8 +1,12 @@
 """Configuration classes for flash timing and parallelism parameters."""
 
+import copy
+import json
+import math
 import os
 from dataclasses import dataclass, field
-from typing import Optional, NamedTuple, Dict, Set, List
+from pathlib import Path
+from typing import Any, Optional, NamedTuple, Dict, Set, List
 from enum import Enum
 
 
@@ -35,7 +39,8 @@ DEFAULT_LAYERS_PER_BLOCK = 128
 DEFAULT_SL_PER_BLOCK = 1
 DEFAULT_SSL_PER_SL = 4
 DEFAULT_SUB_BLOCKS_PER_BLOCK = DEFAULT_SL_PER_BLOCK * DEFAULT_SSL_PER_SL
-DEFAULT_SECTOR_PER_PAGE = 16
+SECTOR_SIZE_BYTES = 512
+DEFAULT_SECTOR_PER_PAGE = 64
 DEFAULT_COMPUTE_MAX_PARALLEL_SL = 256
 DEFAULT_SEARCH_MAX_PARALLEL_WL = 256
 DEFAULT_STATIC_CHIP_PER_CHANNEL = 1
@@ -55,9 +60,18 @@ EVENT_RUNTIME_VALID_INVALID_RATIO = _env_float(
     "FLASHSIM_EVENT_RUNTIME_VALID_INVALID_RATIO", 1.0
 )
 
+_EVENT_RUNTIME_GEOMETRY_OVERRIDE: "FlashGeometry | None" = None
 
-def make_event_runtime_geometry(**overrides) -> "FlashGeometry":
-    """Build the compact geometry used by the legacy event-driven runtime."""
+
+def set_event_runtime_geometry(geometry: "FlashGeometry | None") -> None:
+    """Set the process-local geometry used by the event-driven runtime."""
+
+    global _EVENT_RUNTIME_GEOMETRY_OVERRIDE
+    _EVENT_RUNTIME_GEOMETRY_OVERRIDE = geometry
+
+
+def default_event_runtime_geometry(**overrides) -> "FlashGeometry":
+    """Build the compact default geometry used by the event-driven runtime."""
     geometry_kwargs = {
         "channel_no": DEFAULT_CHANNEL_NO,
         "chip_per_channel": DEFAULT_CHIP_PER_CHANNEL,
@@ -77,6 +91,13 @@ def make_event_runtime_geometry(**overrides) -> "FlashGeometry":
     }
     geometry_kwargs.update(overrides)
     return FlashGeometry(**geometry_kwargs)
+
+
+def make_event_runtime_geometry(**overrides) -> "FlashGeometry":
+    """Build the compact geometry used by the legacy event-driven runtime."""
+    if _EVENT_RUNTIME_GEOMETRY_OVERRIDE is not None and not overrides:
+        return _EVENT_RUNTIME_GEOMETRY_OVERRIDE
+    return default_event_runtime_geometry(**overrides)
 
 
 class FlashTechnology(Enum):
@@ -334,6 +355,26 @@ class FlashGeometry:
     def static_area_base_address(self) -> int:
         """static area 的起始地址。"""
         return self.tot_random_sector_no//self.sector_per_page
+
+    def to_dict(self) -> dict[str, int | float]:
+        return {
+            "channel_no": self.channel_no,
+            "chip_per_channel": self.chip_per_channel,
+            "dies": self.dies,
+            "planes_per_die": self.planes_per_die,
+            "blocks_per_plane": self.blocks_per_plane,
+            "layers_per_block": self.layers_per_block,
+            "sl_per_block": self.sl_per_block,
+            "ssl_per_sl": self.ssl_per_sl,
+            "sub_blocks_per_block": self.sub_blocks_per_block,
+            "sector_per_page": self.sector_per_page,
+            "compute_max_parallel_sl": self.compute_max_parallel_sl,
+            "search_max_parallel_wl": self.search_max_parallel_wl,
+            "static_chip_per_channel": self.static_chip_per_channel,
+            "valid_invalid_ratio": self.valid_invalid_ratio,
+            "preconditioning_full_block_ratio": self.preconditioning_full_block_ratio,
+            "preconditioning_cmt_ratio": self.preconditioning_cmt_ratio,
+        }
 
     def page_to_address(self, page: int, technology: FlashTechnology = FlashTechnology.SLC) -> FlashAddress:
         """Convert a linear page number to physical flash address.
@@ -714,6 +755,7 @@ class FlashConfig:
     @classmethod
     def from_dict(cls, config_dict: dict) -> "FlashConfig":
         """Create configuration from a dictionary."""
+        _reject_immutable_sector_size_fields(config_dict)
         timing_dict = config_dict.get("timing", {})
         onfi_dict = config_dict.get("onfi", {})
         parallel_dict = config_dict.get("parallel", {})
@@ -813,6 +855,9 @@ class FlashConfig:
             static_chip_per_channel=geometry_dict.get(
                 "static_chip_per_channel", DEFAULT_STATIC_CHIP_PER_CHANNEL
             ),
+            valid_invalid_ratio=geometry_dict.get("valid_invalid_ratio", 1.0),
+            preconditioning_full_block_ratio=geometry_dict.get("preconditioning_full_block_ratio", 0.5),
+            preconditioning_cmt_ratio=geometry_dict.get("preconditioning_cmt_ratio", 0.5),
         )
 
         runtime = RuntimeConfig(
@@ -949,6 +994,270 @@ class FlashConfig:
     @property
     def planes_per_die(self) -> int:
         return self.geometry.planes_per_die
+
+
+def load_flash_config(source: FlashConfig | dict[str, Any] | str | os.PathLike | None = None) -> FlashConfig:
+    """Build a FlashConfig from an existing config, a dictionary, or a JSON path."""
+
+    if source is None:
+        return FlashConfig()
+    if isinstance(source, FlashConfig):
+        return FlashConfig.from_dict(source.to_dict())
+    if isinstance(source, dict):
+        return FlashConfig.from_dict(copy.deepcopy(source))
+    if isinstance(source, (str, os.PathLike)):
+        path = Path(source)
+        with path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        if not isinstance(payload, dict):
+            raise ValueError(f"Flash config JSON must contain an object: {path}")
+        return FlashConfig.from_dict(payload)
+    raise TypeError(
+        "Flash config source must be None, FlashConfig, dict, or JSON path; "
+        f"got {type(source).__name__}"
+    )
+
+
+_CONFIG_SECTIONS = {
+    "timing": TimingConfig,
+    "onfi": OnfiTimingConfig,
+    "parallel": ParallelConfig,
+    "geometry": FlashGeometry,
+    "runtime": RuntimeConfig,
+}
+
+_IMMUTABLE_SECTOR_SIZE_PATHS = {
+    "sector_size_bytes",
+    "sector_bytes",
+    "SECTOR_SIZE_BYTES",
+    "geometry.sector_size_bytes",
+    "geometry.sector_bytes",
+    "runtime.sector_size_bytes",
+    "runtime.sector_bytes",
+}
+
+
+def _dataclass_field_names(cls) -> set[str]:
+    return set(getattr(cls, "__dataclass_fields__", {}).keys())
+
+
+def _reject_immutable_sector_size_fields(mapping: Any, *, prefix: str = "") -> None:
+    if not isinstance(mapping, dict):
+        return
+    for key, value in mapping.items():
+        path = f"{prefix}.{key}" if prefix else str(key)
+        if path in _IMMUTABLE_SECTOR_SIZE_PATHS or str(key) in {"SECTOR_SIZE_BYTES"}:
+            raise ValueError(f"{path} is immutable; SECTOR_SIZE_BYTES is fixed at {SECTOR_SIZE_BYTES}")
+        if isinstance(value, dict):
+            _reject_immutable_sector_size_fields(value, prefix=path)
+
+
+def _normalize_override_path(path: str) -> tuple[str, str]:
+    parts = str(path).split(".")
+    if len(parts) != 2:
+        raise ValueError(f"Flash config override path must be section.field, got {path!r}")
+    section, field_name = parts[0], parts[1]
+    if section not in _CONFIG_SECTIONS:
+        raise ValueError(f"Unknown flash config section in override path: {section}")
+    valid_fields = _dataclass_field_names(_CONFIG_SECTIONS[section])
+    if field_name not in valid_fields:
+        raise ValueError(f"Unknown flash config field in override path: {path}")
+    return section, field_name
+
+
+def _flatten_overrides(overrides: dict[str, Any] | None) -> dict[str, Any]:
+    if not overrides:
+        return {}
+    if not isinstance(overrides, dict):
+        raise TypeError("Flash config overrides must be a dictionary")
+    _reject_immutable_sector_size_fields(overrides)
+    flattened: dict[str, Any] = {}
+    for key, value in overrides.items():
+        key = str(key)
+        if "." in key:
+            _normalize_override_path(key)
+            flattened[key] = value
+            continue
+        if key not in _CONFIG_SECTIONS:
+            raise ValueError(f"Unknown flash config override section: {key}")
+        if not isinstance(value, dict):
+            raise ValueError(f"Flash config override section {key!r} must be a dictionary")
+        for subkey, subvalue in value.items():
+            path = f"{key}.{subkey}"
+            _normalize_override_path(path)
+            flattened[path] = subvalue
+    return flattened
+
+
+def apply_flash_config_overrides(config: FlashConfig, overrides: dict[str, Any] | None = None) -> FlashConfig:
+    """Return a new FlashConfig with validated nested overrides applied."""
+
+    payload = copy.deepcopy(config.to_dict())
+    for path, value in _flatten_overrides(overrides).items():
+        section, field_name = _normalize_override_path(path)
+        payload[section][field_name] = value
+    return FlashConfig.from_dict(payload)
+
+
+def build_flash_config(
+    source: FlashConfig | dict[str, Any] | str | os.PathLike | None = None,
+    *,
+    overrides: dict[str, Any] | None = None,
+) -> FlashConfig:
+    """Build a FlashConfig and apply validated nested overrides."""
+
+    return apply_flash_config_overrides(load_flash_config(source), overrides)
+
+
+def _placement_required_sectors(placement_ranges: list[Any] | None) -> int:
+    required = 0
+    for item in placement_ranges or []:
+        if not isinstance(item, dict):
+            if isinstance(item, (tuple, list)) and len(item) == 2:
+                start_lha, size = int(item[0]), int(item[1])
+            else:
+                continue
+        else:
+            start_lha = int(item.get("start_lha", item.get("flash_start_lha", 0)) or 0)
+            size = int(item.get("size", item.get("sector_count", 0)) or 0)
+        if size <= 0:
+            continue
+        required = max(required, start_lha + size)
+    return required
+
+
+def _random_data_sector_capacity(geometry: FlashGeometry) -> tuple[int, int, int]:
+    non_static_chips = geometry.chip_per_channel - geometry.static_chip_per_channel
+    total_random_pages = (
+        geometry.channel_no
+        * non_static_chips
+        * geometry.dies
+        * geometry.planes_per_die
+        * geometry.blocks_per_plane
+        * geometry.pages_per_block
+    )
+    lpa_per_mapping_page = 4 * geometry.sector_per_page
+    mapping_pages = (total_random_pages + lpa_per_mapping_page - 1) // lpa_per_mapping_page
+    data_pages = total_random_pages - mapping_pages
+    return max(0, data_pages * geometry.sector_per_page), total_random_pages, mapping_pages
+
+
+def _plane_for_lpa(lpa: int, geometry: FlashGeometry) -> tuple[int, int, int, int]:
+    pages_per_plane = geometry.blocks_per_plane * geometry.pages_per_block
+    value = int(lpa) // max(1, pages_per_plane)
+    plane_id = value % geometry.planes_per_die
+    value //= geometry.planes_per_die
+    die_id = value % geometry.dies
+    value //= geometry.dies
+    chip_id = value % geometry.chip_per_channel
+    channel_id = value // geometry.chip_per_channel
+    return channel_id, chip_id, die_id, plane_id
+
+
+def _required_pages_by_plane(placement_ranges: list[Any] | None, geometry: FlashGeometry) -> dict[tuple[int, int, int, int], int]:
+    counts: dict[tuple[int, int, int, int], int] = {}
+    if not placement_ranges:
+        return counts
+    for item in placement_ranges:
+        if isinstance(item, dict):
+            start_lha = int(item.get("start_lha", item.get("flash_start_lha", 0)) or 0)
+            sector_count = int(item.get("size", item.get("sector_count", 0)) or 0)
+        elif isinstance(item, (tuple, list)) and len(item) == 2:
+            start_lha = int(item[0])
+            sector_count = int(item[1])
+        else:
+            continue
+        if sector_count <= 0:
+            continue
+        start_lpa = start_lha // geometry.sector_per_page
+        end_lpa = (start_lha + sector_count - 1) // geometry.sector_per_page
+        for lpa in range(start_lpa, end_lpa + 1):
+            key = _plane_for_lpa(lpa, geometry)
+            counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _preconditionable_pages_per_plane(geometry: FlashGeometry) -> int:
+    reserve_blocks = 0
+    return max(0, (geometry.blocks_per_plane - reserve_blocks) * geometry.pages_per_block)
+
+
+def build_flash_config_for_capacity(
+    source: FlashConfig | dict[str, Any] | str | os.PathLike | None = None,
+    *,
+    overrides: dict[str, Any] | None = None,
+    required_bytes: int | float | None = None,
+    required_sectors: int | float | None = None,
+    placement_ranges: list[Any] | None = None,
+    capacity_margin: float = 0.05,
+    allow_geometry_growth: bool = True,
+    growth_field: str = "blocks_per_plane",
+) -> tuple[FlashConfig, dict[str, Any]]:
+    """Build a FlashConfig whose random data area covers the required sectors."""
+
+    if source is None:
+        base_source: Any = {"geometry": default_event_runtime_geometry().to_dict()}
+    elif isinstance(source, dict) and "geometry" not in source:
+        base_source = copy.deepcopy(source)
+        base_source["geometry"] = default_event_runtime_geometry().to_dict()
+    else:
+        base_source = source
+    config = build_flash_config(base_source, overrides=overrides)
+    required = 0
+    if required_bytes is not None:
+        required = max(required, int(math.ceil(float(required_bytes) / SECTOR_SIZE_BYTES)))
+    if required_sectors is not None:
+        required = max(required, int(math.ceil(float(required_sectors))))
+    required = max(required, _placement_required_sectors(placement_ranges))
+    if required < 0:
+        raise ValueError("required capacity must be non-negative")
+
+    target = int(math.ceil(required * (1.0 + max(0.0, float(capacity_margin or 0.0)))))
+    generated, total_pages, mapping_pages = _random_data_sector_capacity(config.geometry)
+    original_geometry = config.geometry.to_dict() if hasattr(config.geometry, "to_dict") else None
+    changed_fields: dict[str, tuple[int, int]] = {}
+
+    def needs_growth(current_config: FlashConfig, current_generated: int) -> bool:
+        if target > current_generated:
+            return True
+        required_by_plane = _required_pages_by_plane(placement_ranges, current_config.geometry)
+        if not required_by_plane:
+            return False
+        return max(required_by_plane.values()) > _preconditionable_pages_per_plane(current_config.geometry)
+
+    if needs_growth(config, generated):
+        if not allow_geometry_growth:
+            raise ValueError(
+                "flashsim capacity is insufficient: "
+                f"required_sectors={target} generated_sectors={generated}"
+            )
+        if growth_field != "blocks_per_plane":
+            raise ValueError(f"unsupported flashsim capacity growth field: {growth_field}")
+        payload = config.to_dict()
+        geometry = FlashGeometry(**payload["geometry"])
+        before = int(geometry.blocks_per_plane)
+        while needs_growth(config, generated):
+            multiplier = max(2, int(math.ceil(target / max(1, generated))))
+            geometry.blocks_per_plane = max(geometry.blocks_per_plane + 1, geometry.blocks_per_plane * multiplier)
+            payload["geometry"]["blocks_per_plane"] = geometry.blocks_per_plane
+            config = FlashConfig.from_dict(payload)
+            generated, total_pages, mapping_pages = _random_data_sector_capacity(config.geometry)
+        changed_fields["geometry.blocks_per_plane"] = (before, int(config.geometry.blocks_per_plane))
+
+    report = {
+        "required_sectors": int(required),
+        "required_target_sectors": int(target),
+        "generated_sectors": int(generated),
+        "sector_size_bytes": SECTOR_SIZE_BYTES,
+        "capacity_margin": float(capacity_margin or 0.0),
+        "geometry_changed": changed_fields,
+        "geometry": copy.deepcopy(config.to_dict()["geometry"]),
+        "total_random_pages": int(total_pages),
+        "mapping_pages": int(mapping_pages),
+    }
+    if original_geometry is not None:
+        report["original_geometry"] = original_geometry
+    return config, report
 
 
 class FTL:

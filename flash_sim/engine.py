@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import heapq
 import os
+import sys
 from pathlib import Path
 from collections import defaultdict
 from typing import Any
@@ -17,7 +18,7 @@ if __package__ in (None, ""):
     from flash_sim import Device
     from flash_sim import common as _common
     from flash_sim.common import EventType, SimEvent, Request, RequestType, format_event_queue
-    from flash_sim.config import FlashConfig
+    from flash_sim.config import FlashConfig, default_event_runtime_geometry, load_flash_config, set_event_runtime_geometry
     from flash_sim.parser import parse_trace
     from flash_sim.request_latency_report import RequestLatencyRecorder
 else:
@@ -26,7 +27,7 @@ else:
     from . import Device
     from . import common as _common
     from .common import EventType, SimEvent, Request, RequestType, format_event_queue
-    from .config import FlashConfig
+    from .config import FlashConfig, default_event_runtime_geometry, load_flash_config, set_event_runtime_geometry
     from .parser import parse_trace
     from .request_latency_report import RequestLatencyRecorder
 
@@ -57,6 +58,63 @@ class _EventHeapQueue:
 
 
 READ_LIKE_PRECONDITION_TYPES = {"read", "search", "compute"}
+
+
+_RUNTIME_CONSTANT_NAMES = (
+    "CHANNEL_NO",
+    "CHIP_PER_CHANNEL",
+    "DIE_PER_CHIP",
+    "PLANE_PER_DIE",
+    "BLOCK_PER_PLANE",
+    "SL_PER_BLOCK",
+    "SSL_PER_SL",
+    "PAGE_PER_BLOCK",
+    "SECTOR_PER_PAGE",
+    "COMPUTE_MAX_PARALLEL_SL",
+    "SEARCH_MAX_PARALLEL_WL",
+    "PAGE_NO_PER_SEARCH_BANK",
+    "PAGE_NO_PER_COMPUTE_BANK",
+    "COMPUTE_BANK_PER_PLANE",
+    "SEARCH_BANK_PER_PLANE",
+    "STATIC_CHIP_PER_CHANNEL",
+    "STATIC_BASE_LHA",
+    "LPA_NO_PER_MAPPING_PAGE",
+    "SECTOR_SIZE_BYTES",
+)
+
+
+def _configure_runtime_from_flash_config(config: FlashConfig) -> None:
+    """Apply a FlashConfig's geometry to modules with import-time constants."""
+
+    set_event_runtime_geometry(config.geometry)
+    if hasattr(_common, "configure_event_runtime"):
+        _common.configure_event_runtime(config.geometry)
+    for module_name in (
+        "flash_sim.FTL",
+        "flash_sim.PHY",
+        "flash_sim.HIL",
+        "flash_sim.PCIe_link",
+        "flash_sim.request_latency_report",
+        "lib.flashsim.flash_sim.FTL",
+        "lib.flashsim.flash_sim.PHY",
+        "lib.flashsim.flash_sim.HIL",
+        "lib.flashsim.flash_sim.PCIe_link",
+        "lib.flashsim.flash_sim.request_latency_report",
+    ):
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        for name in _RUNTIME_CONSTANT_NAMES:
+            if hasattr(module, name):
+                setattr(module, name, getattr(_common, name))
+
+
+def _uses_implicit_geometry(config_source: Any) -> bool:
+    if config_source is None:
+        return True
+    if isinstance(config_source, dict):
+        return "geometry" not in config_source
+    return False
 
 
 def _command_lpa_range(cmd: dict[str, Any], sector_per_page: int) -> range:
@@ -248,7 +306,7 @@ def _generate_precondition_from_trace(
 
 
 class Engine:
-    def __init__(self, config: FlashConfig | None = None):
+    def __init__(self, config: FlashConfig | dict[str, Any] | str | os.PathLike | None = None):
         if not _common.QUIET:
             print("Initializing simulation engine...")
         self._construction_valid: bool = False
@@ -266,7 +324,11 @@ class Engine:
         self.last_request_latency_report_path: Path | None = None
         self.last_request_latency_csv_path: Path | None = None
 
-        self.config = config or FlashConfig()
+        self.config = load_flash_config(config)
+        if _uses_implicit_geometry(config):
+            self.config.geometry = default_event_runtime_geometry()
+        _configure_runtime_from_flash_config(self.config)
+        self._in_process_request_counter = 0
         self.host = Host.Host("Host", num_of_queues=8, depth_of_queues=64)
         self.device = Device.Device(
             self.host,
@@ -284,6 +346,123 @@ class Engine:
         event = SimEvent(type=event_type, target=target, time=scheduled_time, param=param)
         self.event_queue.put(event)
         return event
+
+    def initialize_in_process(
+        self,
+        *,
+        precondition=None,
+        required_lha_ranges: list[Any] | None = None,
+        required_lpa_ranges: list[Any] | None = None,
+    ) -> "Engine":
+        """Validate and optionally precondition the engine without reading a trace."""
+
+        self.Validate_construction()
+        block_manager = self.device.ftl.block_manager
+        phy = self.device.ftl.tsu.phy
+        amu = self.device.ftl.address_mapping_unit
+        if precondition is not None:
+            block_manager.preconditioning(data_path=precondition, phy=phy, amu=amu)
+        else:
+            required_ranges: list[Any] = list(required_lha_ranges or [])
+            for item in required_lpa_ranges or []:
+                if isinstance(item, dict):
+                    required_ranges.append(item)
+                elif isinstance(item, (tuple, list)) and len(item) == 2:
+                    required_ranges.append({"start_lpa": int(item[0]), "page_count": int(item[1])})
+                else:
+                    required_ranges.append({"lpa": int(item)})
+            if required_ranges:
+                block_manager.precondition_required_ranges(
+                    required_ranges,
+                    phy=phy,
+                    amu=amu,
+                )
+        return self
+
+    def make_request(
+        self,
+        request_type: RequestType | str,
+        *,
+        lha_start: int,
+        size: int,
+        stream_id: int = 0,
+        sq_id: int | None = None,
+        trace_index: int | None = None,
+        trace_time: int | None = None,
+        report_req_id: str | None = None,
+    ) -> Request:
+        if not isinstance(request_type, RequestType):
+            request_type = RequestType(str(request_type).upper())
+        if report_req_id is None:
+            report_req_id = self._next_in_process_request_id(request_type, lha_start, size)
+        return Request(
+            type=request_type,
+            stream_id=stream_id,
+            sq_id=sq_id,
+            transaction_list=[],
+            lha_start=int(lha_start),
+            size=int(size),
+            trace_index=trace_index,
+            trace_time=trace_time,
+            report_req_id=report_req_id,
+        )
+
+    def inject_request(self, req: Request, scheduled_time: int | float | None = None) -> SimEvent:
+        """Register a REQ_INIT event for an already-created request."""
+
+        if req.report_req_id is None:
+            req.report_req_id = self._next_in_process_request_id(req.type, req.lha_start, req.size)
+        scheduled_time = self.current_time if scheduled_time is None else int(round(scheduled_time))
+        self.request_latency_recorder.register_request(req, scheduled_time)
+        return self.Register_event(EventType.REQ_INIT, self.host, {"req": req}, scheduled_time)
+
+    def submit_request(
+        self,
+        req: Request,
+        scheduled_time: int | float | None = None,
+        *,
+        drain: bool = True,
+    ) -> dict[str, Any]:
+        self.inject_request(req, scheduled_time)
+        if drain:
+            self.Run()
+        return self.get_request_result(req)
+
+    def get_request_record(self, req_or_id: Request | str) -> dict[str, Any] | None:
+        return self.request_latency_recorder.export_request(req_or_id)
+
+    def get_request_result(self, req_or_id: Request | str) -> dict[str, Any]:
+        record = self.get_request_record(req_or_id)
+        req_id = req_or_id.report_req_id if isinstance(req_or_id, Request) else str(req_or_id)
+        if record is None:
+            return {"req_id": req_id, "status": "PENDING", "raw_record": None}
+        return {
+            "req_id": req_id,
+            "status": record.get("status"),
+            "error_message": record.get("error_message"),
+            "finish_time": record.get("host_completion_time"),
+            "latency": record.get("total_latency"),
+            "energy": record.get("energy_uj"),
+            "raw_record": record,
+        }
+
+    def completed_request_records(self) -> list[dict[str, Any]]:
+        return [
+            record
+            for record in self.request_latency_recorder.export()["requests"]
+            if record.get("status") is not None
+        ]
+
+    def close(self, *, export_reports: bool = False) -> None:
+        self._finalize_pending_cache_flushes()
+        if export_reports:
+            self._dump_pending_state_if_requested()
+            self._export_request_latency_report()
+
+    def _next_in_process_request_id(self, request_type: RequestType, lha_start: int, size: int) -> str:
+        self._in_process_request_counter += 1
+        req_type = request_type.value if hasattr(request_type, "value") else str(request_type)
+        return f"inproc-{self._in_process_request_counter:06d}-{req_type.lower()}-{int(lha_start)}-{int(size)}"
 
     def Execute_event(self):
         event = self.event_queue.get()

@@ -7,9 +7,9 @@ import time
 from typing import Any, List, Optional
 from enum import Enum
 try:
-    from .config import OnfiTimingConfig, TimingConfig, make_event_runtime_geometry
+    from .config import SECTOR_SIZE_BYTES, OnfiTimingConfig, TimingConfig, make_event_runtime_geometry
 except ImportError:
-    from config import OnfiTimingConfig, TimingConfig, make_event_runtime_geometry
+    from config import SECTOR_SIZE_BYTES, OnfiTimingConfig, TimingConfig, make_event_runtime_geometry
 
 class EventType(Enum):
     # ----- 事件类型常量 -----
@@ -116,16 +116,16 @@ BLOCK_PER_PLANE = geometry.blocks_per_plane
 SL_PER_BLOCK = geometry.sl_per_block
 SSL_PER_SL = geometry.ssl_per_sl
 PAGE_PER_BLOCK = geometry.pages_per_block
-SECTOR_PER_PAGE = 64
+SECTOR_PER_PAGE = geometry.sector_per_page
 
-COMPUTE_MAX_PARALLEL_SL = 256
-SEARCH_MAX_PARALLEL_WL = 256
+COMPUTE_MAX_PARALLEL_SL = geometry.compute_max_parallel_sl
+SEARCH_MAX_PARALLEL_WL = geometry.search_max_parallel_wl
 PAGE_NO_PER_SEARCH_BANK = SEARCH_MAX_PARALLEL_WL
 PAGE_NO_PER_COMPUTE_BANK = COMPUTE_MAX_PARALLEL_SL * SSL_PER_SL
 COMPUTE_BANK_PER_PLANE = BLOCK_PER_PLANE * SL_PER_BLOCK // COMPUTE_MAX_PARALLEL_SL
 SEARCH_BANK_PER_PLANE = SSL_PER_SL * SL_PER_BLOCK * BLOCK_PER_PLANE
 
-STATIC_CHIP_PER_CHANNEL = 1
+STATIC_CHIP_PER_CHANNEL = geometry.static_chip_per_channel
 STATIC_BASE_LHA = SECTOR_PER_PAGE * PAGE_PER_BLOCK * BLOCK_PER_PLANE * PLANE_PER_DIE \
     * DIE_PER_CHIP * CHANNEL_NO * (CHIP_PER_CHANNEL - STATIC_CHIP_PER_CHANNEL) # 1610612736
 
@@ -146,9 +146,51 @@ INVALID_LPA = -1
 INVALID_MVPN = -1
 INVALID_DATA = -1
 INVALID_PPA = -1
-SECTOR_SIZE_BYTES = 64
 DATA_CACHE_LINE_SIZE = 64
 DATA_CACHE_CAP = 262144
+
+
+def configure_event_runtime(new_geometry) -> None:
+    """Refresh common event-runtime constants from a FlashGeometry instance."""
+
+    global geometry, CHANNEL_NO, CHIP_PER_CHANNEL, DIE_PER_CHIP, PLANE_PER_DIE
+    global BLOCK_PER_PLANE, SL_PER_BLOCK, SSL_PER_SL, PAGE_PER_BLOCK, SECTOR_PER_PAGE
+    global COMPUTE_MAX_PARALLEL_SL, SEARCH_MAX_PARALLEL_WL, PAGE_NO_PER_SEARCH_BANK
+    global PAGE_NO_PER_COMPUTE_BANK, COMPUTE_BANK_PER_PLANE, SEARCH_BANK_PER_PLANE
+    global STATIC_CHIP_PER_CHANNEL, STATIC_BASE_LHA, LPA_NO_PER_MAPPING_PAGE
+
+    geometry = new_geometry
+    CHANNEL_NO = int(new_geometry.channel_no)
+    CHIP_PER_CHANNEL = int(new_geometry.chip_per_channel)
+    DIE_PER_CHIP = int(new_geometry.dies)
+    PLANE_PER_DIE = int(new_geometry.planes_per_die)
+    BLOCK_PER_PLANE = int(new_geometry.blocks_per_plane)
+    SL_PER_BLOCK = int(new_geometry.sl_per_block)
+    SSL_PER_SL = int(new_geometry.ssl_per_sl)
+    PAGE_PER_BLOCK = int(new_geometry.pages_per_block)
+    SECTOR_PER_PAGE = int(new_geometry.sector_per_page)
+    COMPUTE_MAX_PARALLEL_SL = int(new_geometry.compute_max_parallel_sl)
+    SEARCH_MAX_PARALLEL_WL = int(new_geometry.search_max_parallel_wl)
+    PAGE_NO_PER_SEARCH_BANK = SEARCH_MAX_PARALLEL_WL
+    PAGE_NO_PER_COMPUTE_BANK = COMPUTE_MAX_PARALLEL_SL * SSL_PER_SL
+    COMPUTE_BANK_PER_PLANE = BLOCK_PER_PLANE * SL_PER_BLOCK // COMPUTE_MAX_PARALLEL_SL
+    SEARCH_BANK_PER_PLANE = SSL_PER_SL * SL_PER_BLOCK * BLOCK_PER_PLANE
+    STATIC_CHIP_PER_CHANNEL = int(new_geometry.static_chip_per_channel)
+    STATIC_BASE_LHA = (
+        SECTOR_PER_PAGE
+        * PAGE_PER_BLOCK
+        * BLOCK_PER_PLANE
+        * PLANE_PER_DIE
+        * DIE_PER_CHIP
+        * CHANNEL_NO
+        * (CHIP_PER_CHANNEL - STATIC_CHIP_PER_CHANNEL)
+    )
+    LPA_NO_PER_MAPPING_PAGE = int(
+        os.environ.get(
+            "FLASHSIM_LPA_NO_PER_MAPPING_PAGE",
+            str(LPA_NO_PER_SECTOR * SECTOR_PER_PAGE),
+        )
+    )
 
 # PCIe timing config
 # Units:

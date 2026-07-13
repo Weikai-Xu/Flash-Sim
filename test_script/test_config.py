@@ -1,7 +1,103 @@
 """Tests for configuration classes."""
 
+import copy
+
 import pytest
-from flash_sim.config import TimingConfig, ParallelConfig, FlashConfig, FlashGeometry, FlashAddress, FlashTechnology
+from flash_sim.common import SECTOR_SIZE_BYTES as COMMON_SECTOR_SIZE_BYTES
+from flash_sim.config import (
+    SECTOR_SIZE_BYTES,
+    TimingConfig,
+    ParallelConfig,
+    FlashConfig,
+    FlashGeometry,
+    FlashAddress,
+    FlashTechnology,
+    build_flash_config,
+    build_flash_config_for_capacity,
+)
+
+
+def test_sector_size_is_fixed_at_512_bytes():
+    assert SECTOR_SIZE_BYTES == 512
+    assert COMMON_SECTOR_SIZE_BYTES == 512
+
+
+def test_build_flash_config_applies_nested_overrides_without_mutating_input():
+    source = {"runtime": {"cache_bypass": False}}
+    original = copy.deepcopy(source)
+    config = build_flash_config(
+        source,
+        overrides={
+            "runtime": {"cache_bypass": True},
+            "geometry.blocks_per_plane": 8,
+        },
+    )
+
+    assert source == original
+    assert config.runtime.cache_bypass is True
+    assert config.geometry.blocks_per_plane == 8
+
+
+def test_build_flash_config_rejects_invalid_override_path():
+    with pytest.raises(ValueError, match="Unknown flash config"):
+        build_flash_config(overrides={"geometry.not_a_field": 1})
+
+
+def test_build_flash_config_rejects_sector_size_override():
+    with pytest.raises(ValueError, match="immutable"):
+        build_flash_config(overrides={"sector_size_bytes": 64})
+    with pytest.raises(ValueError, match="immutable"):
+        build_flash_config({"geometry": {"sector_size_bytes": 64}})
+
+
+def test_build_flash_config_for_capacity_grows_geometry_and_reports_capacity():
+    config, report = build_flash_config_for_capacity(
+        {
+            "geometry": {
+                "channel_no": 1,
+                "chip_per_channel": 2,
+                "dies": 1,
+                "planes_per_die": 1,
+                "blocks_per_plane": 1,
+                "layers_per_block": 1,
+                "sl_per_block": 1,
+                "ssl_per_sl": 1,
+                "sub_blocks_per_block": 1,
+                "sector_per_page": 64,
+                "static_chip_per_channel": 1,
+            }
+        },
+        required_bytes=512 * 1024,
+        capacity_margin=0.0,
+    )
+
+    assert report["sector_size_bytes"] == 512
+    assert report["required_sectors"] == 1024
+    assert report["generated_sectors"] >= 1024
+    assert config.geometry.blocks_per_plane > 1
+
+
+def test_build_flash_config_for_capacity_can_reject_insufficient_locked_geometry():
+    with pytest.raises(ValueError, match="insufficient"):
+        build_flash_config_for_capacity(
+            {
+                "geometry": {
+                    "channel_no": 1,
+                    "chip_per_channel": 2,
+                    "dies": 1,
+                    "planes_per_die": 1,
+                    "blocks_per_plane": 1,
+                    "layers_per_block": 1,
+                    "sl_per_block": 1,
+                    "ssl_per_sl": 1,
+                    "sub_blocks_per_block": 1,
+                    "sector_per_page": 64,
+                    "static_chip_per_channel": 1,
+                }
+            },
+            required_sectors=1024,
+            allow_geometry_growth=False,
+        )
 
 
 class TestTimingConfig:

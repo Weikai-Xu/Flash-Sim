@@ -630,6 +630,15 @@ class RequestLatencyRecorder:
             "requests": requests_payload,
         }
 
+    def export_request(self, req_or_id: Request | str) -> dict[str, Any] | None:
+        """Return one exported in-memory request record, if it is known."""
+
+        req_id = self._request_id(req_or_id) if isinstance(req_or_id, Request) else str(req_or_id)
+        for record in self.export()["requests"]:
+            if record.get("req_id") == req_id:
+                return record
+        return None
+
     def dump_json(self, output_path: str | Path) -> Path:
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
