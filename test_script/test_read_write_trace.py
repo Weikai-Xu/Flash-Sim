@@ -12,12 +12,12 @@ def _completion_path_sum(row):
         int(row[column])
         for column in (
             "Time in SQ",
-            "PCIe Xfer",
+            "PCIe Request",
+            "PCIe Completion",
             "Mapping",
             "Time in TSU",
             "ONFI Xfer",
             "Array Exec",
-            "PCIe Xfer (CQ)",
         )
     )
 

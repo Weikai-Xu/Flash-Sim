@@ -50,8 +50,8 @@ def main() -> None:
         mqsim = mqsim_by_arrival[arrival]
         item = metadata[arrival]
         flash_original = int(flash["Finish Time"]) - arrival
-        compensation = int(flash["PCIe Xfer (Data)"])
-        flash_adjusted = flash_original + compensation
+        # PCIe Completion now includes both data return and CQE (no separate compensation needed)
+        flash_adjusted = flash_original
         mqsim_latency = int(mqsim["ExecTime"])
         joined.append(
             {

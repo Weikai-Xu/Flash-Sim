@@ -44,12 +44,12 @@ def _completion_path_sum(csv_row):
         int(csv_row[column])
         for column in (
             "Time in SQ",
-            "PCIe Xfer",
+            "PCIe Request",
+            "PCIe Completion",
             "Mapping",
             "Time in TSU",
             "ONFI Xfer",
             "Array Exec",
-            "PCIe Xfer (CQ)",
         )
     )
 
@@ -97,8 +97,8 @@ class TestRequestLatencyReportEndToEnd(unittest.TestCase):
         self.assertEqual(req["size"], trace_content[0]["size"])
         self.assertEqual(req["persistence_status"], "not_applicable")
         self.assertEqual(req["mapping_resolution_counts"]["cmt_hit"], 1)
-        self.assertGreater(req["breakdown"]["pcie_host_to_device"], 0)
-        self.assertGreater(req["breakdown"]["pcie_device_to_host"], 0)
+        self.assertGreater(req["breakdown"]["pcie_request"], 0)
+        self.assertGreater(req["breakdown"]["pcie_completion"], 0)
         self.assertEqual(req["breakdown"]["amu_mapping_wait"], 0)
         self.assertGreater(req["breakdown"]["phy_cmd_addr"], 0)
         self.assertGreater(req["breakdown"]["phy_array_exec"], 0)
@@ -108,8 +108,8 @@ class TestRequestLatencyReportEndToEnd(unittest.TestCase):
         self.assertEqual(int(csv_row["Mapping"]), 0)
         self.assertGreater(int(csv_row["ONFI Xfer"]), 0)
         self.assertGreater(int(csv_row["Array Exec"]), 0)
-        self.assertGreater(int(csv_row["PCIe Xfer (CQ)"]), 0)
-        self.assertGreater(int(csv_row["PCIe Xfer (Data)"]), 0)
+        self.assertGreater(int(csv_row["PCIe Completion"]), 0)
+        self.assertGreater(int(csv_row["PCIe Request"]), 0)
         self.assertEqual(
             int(csv_row["Finish Time"]) - int(csv_row["Issue Time"]),
             _completion_path_sum(csv_row),
@@ -161,8 +161,8 @@ class TestRequestLatencyReportEndToEnd(unittest.TestCase):
 
         self.assertEqual(req["type"], "WRITE")
         self.assertGreater(req["host_total_latency"], 0)
-        self.assertGreater(req["breakdown"]["pcie_host_to_device"], 0)
-        self.assertGreater(req["breakdown"]["pcie_device_to_host"], 0)
+        self.assertGreater(req["breakdown"]["pcie_request"], 0)
+        self.assertGreater(req["breakdown"]["pcie_completion"], 0)
         self.assertEqual(req["persistence_status"], "persisted")
         self.assertGreater(req["persistence_total_latency"], req["host_total_latency"])
         self.assertGreater(req["persistence_breakdown"]["phy_cmd_addr"], 0)
@@ -173,8 +173,8 @@ class TestRequestLatencyReportEndToEnd(unittest.TestCase):
         self.assertEqual(int(csv_row["Time in TSU"]), 0)
         self.assertEqual(int(csv_row["ONFI Xfer"]), 0)
         self.assertEqual(int(csv_row["Array Exec"]), 0)
-        self.assertGreater(int(csv_row["PCIe Xfer (CQ)"]), 0)
-        self.assertEqual(int(csv_row["PCIe Xfer (Data)"]), 0)
+        self.assertGreater(int(csv_row["PCIe Completion"]), 0)
+        self.assertGreater(int(csv_row["PCIe Wire"]), 0)
         self.assertEqual(
             int(csv_row["Finish Time"]) - int(csv_row["Issue Time"]),
             _completion_path_sum(csv_row),
@@ -198,8 +198,8 @@ class TestRequestLatencyReportEndToEnd(unittest.TestCase):
         self.assertTrue(all(row["Cache Hit"] == "/" for row in csv_rows))
         self.assertTrue(all(int(row["Mapping"]) == 0 for row in csv_rows))
         compute_rows = [row for row in csv_rows if row["REQ Type"] == "COMPUTE"]
-        self.assertTrue(all(int(row["PCIe Xfer (CQ)"]) > 0 for row in compute_rows))
-        self.assertTrue(all(int(row["PCIe Xfer (Data)"]) > 0 for row in compute_rows))
+        self.assertTrue(all(int(row["PCIe Completion"]) > 0 for row in compute_rows))
+        self.assertTrue(all(int(row["PCIe Wire"]) > 0 for row in compute_rows))
         compute_reqs = [req for req in report["requests"] if req["type"] == "COMPUTE"]
         self.assertTrue(
             all(
