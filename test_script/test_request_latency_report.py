@@ -3,13 +3,9 @@ import unittest
 from flash_sim.common import (
     FlashAddress,
     MessageType,
-    PCIE_INTERFACE_BANDWIDTH_BYTES_PER_NS,
-    PCIE_TLP_MAX_PAYLOAD_BYTES,
-    PCIE_TLP_PACKET_OVERHEAD_BYTES,
     REQUEST_STATUS_SUCCESS,
     Request,
     RequestType,
-    SECTOR_SIZE_BYTES,
     Transaction,
     TransactionType,
 )
@@ -23,15 +19,15 @@ from flash_sim.request_latency_report import (
 
 def _csv_latency_sum(row):
     return sum(
-        row[column]
+        int(row[column])
         for column in (
             "Time in SQ",
-            "PCIe Xfer",
+            "PCIe Request",
+            "PCIe Completion",
             "Mapping",
             "Time in TSU",
             "ONFI Xfer",
             "Array Exec",
-            "PCIe Xfer (CQ)",
         )
     )
 
@@ -44,8 +40,7 @@ class TestRequestLatencyRecorder(unittest.TestCase):
                 "Issue Time", "REQ Type", "Finish Time",
                 "Time in SQ", "Cache Hit", "Mapping", "Time in TSU",
                 "Backpressure Wait Time",
-                "PCIe Xfer", "PCIe Queue (Host)", "PCIe Queue (Device)",
-                "PCIe Wire", "PCIe Xfer (Data)", "PCIe Xfer (CQ)",
+                "PCIe Request", "PCIe Completion", "PCIe Wire",
                 "ONFI Xfer", "ONFI Service", "Array Exec",
                 "Energy for req (μJ)", "Energy for persistant storage (μJ)",
                 "Status", "GC Count", "GC Relocated Pages", "GC Erased Blocks",
@@ -71,20 +66,20 @@ class TestRequestLatencyRecorder(unittest.TestCase):
         recorder.note_request_completed(req, 10)
 
         rec = recorder.requests[req.report_req_id]
-        recorder._append_interval(rec, "intervals", "pcie_host_to_device", 0, 5)
+        recorder._append_interval(rec, "intervals", "pcie_request", 0, 5)
         recorder._append_interval(rec, "intervals", "phy_array_exec", 3, 8)
 
         exported = recorder.export()["requests"][0]
         breakdown = exported["breakdown"]
 
         self.assertEqual(exported["total_latency"], 10)
-        self.assertEqual(breakdown["pcie_host_to_device"], 5)
+        self.assertEqual(breakdown["pcie_request"], 5)
         self.assertEqual(breakdown["phy_array_exec"], 5)
         self.assertEqual(breakdown["overlap_latency"], 2)
         self.assertEqual(breakdown["untracked_latency"], 2)
 
         for stage in BASE_STAGE_NAMES:
-            if stage not in {"pcie_host_to_device", "phy_array_exec"}:
+            if stage not in {"pcie_request", "phy_array_exec"}:
                 self.assertEqual(breakdown[stage], 0)
         for stage in RECONCILIATION_STAGE_NAMES:
             self.assertIn(stage, breakdown)
@@ -262,7 +257,7 @@ class TestRequestLatencyRecorder(unittest.TestCase):
         recorder._append_interval(
             rec,
             "intervals",
-            "pcie_host_to_device",
+            "pcie_request",
             5,
             15,
             {"message_type": MessageType.READ_REQ.value},
@@ -326,7 +321,7 @@ class TestRequestLatencyRecorder(unittest.TestCase):
         recorder._append_interval(
             rec,
             "intervals",
-            "pcie_device_to_host",
+            "pcie_completion",
             60,
             65,
             {"message_type": MessageType.REQ_COMP.value},
@@ -336,21 +331,14 @@ class TestRequestLatencyRecorder(unittest.TestCase):
         recorder.note_request_completed(req, 65)
 
         row = recorder.export_csv_rows()[0]
-        payload_bytes = req.size * SECTOR_SIZE_BYTES
-        packet_count = -(-payload_bytes // PCIE_TLP_MAX_PAYLOAD_BYTES)
-        wire_bytes = payload_bytes + packet_count * PCIE_TLP_PACKET_OVERHEAD_BYTES
-        expected_payload_latency = -(
-            -wire_bytes // PCIE_INTERFACE_BANDWIDTH_BYTES_PER_NS
-        )
 
         self.assertEqual(row["Time in SQ"], 5)
-        self.assertEqual(row["PCIe Xfer"], 10)
+        self.assertEqual(row["PCIe Request"], 10)
         self.assertEqual(row["Mapping"], 20)
         self.assertEqual(row["Time in TSU"], 0)
         self.assertEqual(row["ONFI Xfer"], 15)
         self.assertEqual(row["Array Exec"], 10)
-        self.assertEqual(row["PCIe Xfer (CQ)"], 5)
-        self.assertEqual(row["PCIe Xfer (Data)"], expected_payload_latency)
+        self.assertEqual(row["PCIe Completion"], 5)
         self.assertEqual(row["Finish Time"] - row["Issue Time"], _csv_latency_sum(row))
 
     def test_json_mapping_resolution_counts_exports_cmt_hit(self):
@@ -416,34 +404,38 @@ class TestRequestLatencyRecorder(unittest.TestCase):
 
         rec = recorder.requests[req.report_req_id]
         recorder._append_interval(rec, "intervals", "host_dispatch", 0, 10)
+        # PCIe Request: NVMe command phases (doorbell+sq_read_request+sq_entry)
         recorder._append_interval(
             rec,
             "intervals",
-            "pcie_host_to_device",
+            "pcie_request",
             10,
             20,
-            {"message_type": MessageType.WRITE_REQ.value},
+            {"message_type": MessageType.WRITE_REQ.value, "pcie_phase": "doorbell"},
         )
+        # Write data transfer (also part of PCIe Request — needed before HIL can process)
         recorder._append_interval(
             rec,
             "intervals",
-            "pcie_device_to_host",
+            "pcie_request",
             20,
-            25,
-            {"message_type": MessageType.WRITE_DATA_REQ.value},
-        )
-        recorder._append_interval(
-            rec,
-            "intervals",
-            "pcie_host_to_device",
-            25,
             55,
             {"message_type": MessageType.WRITE_DATA.value},
         )
+        # PCIe Wire captures pure wire time of all messages
         recorder._append_interval(
             rec,
             "intervals",
-            "pcie_device_to_host",
+            "pcie_wire",
+            20,
+            55,
+            {"message_type": MessageType.WRITE_DATA.value},
+        )
+        # PCIe Completion: REQ_COMP
+        recorder._append_interval(
+            rec,
+            "intervals",
+            "pcie_completion",
             55,
             60,
             {"message_type": MessageType.REQ_COMP.value},
@@ -481,13 +473,13 @@ class TestRequestLatencyRecorder(unittest.TestCase):
         self.assertEqual(row["Finish Time"], 60)
         self.assertEqual(row["Cache Hit"], "No")
         self.assertEqual(row["Time in SQ"], 10)
-        self.assertEqual(row["PCIe Xfer"], 45)
+        self.assertEqual(row["PCIe Request"], 45)
+        self.assertEqual(row["PCIe Completion"], 5)
+        self.assertEqual(row["PCIe Wire"], 35)
         self.assertEqual(row["Mapping"], 0)
         self.assertEqual(row["Time in TSU"], 0)
         self.assertEqual(row["ONFI Xfer"], 0)
         self.assertEqual(row["Array Exec"], 0)
-        self.assertEqual(row["PCIe Xfer (CQ)"], 5)
-        self.assertEqual(row["PCIe Xfer (Data)"], 0)
         self.assertEqual(row["Finish Time"] - row["Issue Time"], _csv_latency_sum(row))
 
     def test_csv_read_row_splits_status_and_response_payload_latency(self):
@@ -503,7 +495,7 @@ class TestRequestLatencyRecorder(unittest.TestCase):
         recorder._append_interval(
             rec,
             "intervals",
-            "pcie_host_to_device",
+            "pcie_request",
             20,
             40,
             {"message_type": MessageType.READ_REQ.value},
@@ -511,7 +503,7 @@ class TestRequestLatencyRecorder(unittest.TestCase):
         recorder._append_interval(
             rec,
             "intervals",
-            "pcie_device_to_host",
+            "pcie_completion",
             90,
             110,
             {"message_type": MessageType.REQ_COMP.value},
@@ -521,22 +513,15 @@ class TestRequestLatencyRecorder(unittest.TestCase):
         recorder.note_request_completed(req, 110)
 
         row = recorder.export_csv_rows()[0]
-        payload_bytes = req.size * SECTOR_SIZE_BYTES
-        packet_count = -(-payload_bytes // PCIE_TLP_MAX_PAYLOAD_BYTES)
-        wire_bytes = payload_bytes + packet_count * PCIE_TLP_PACKET_OVERHEAD_BYTES
-        expected_payload_latency = -(
-            -wire_bytes // PCIE_INTERFACE_BANDWIDTH_BYTES_PER_NS
-        )
 
         self.assertEqual(row["Issue Time"], 12)
         self.assertEqual(row["REQ Type"], "READ")
         self.assertEqual(row["Finish Time"], 110)
-        self.assertEqual(row["PCIe Xfer"], 20)
+        self.assertEqual(row["PCIe Request"], 20)
+        self.assertEqual(row["PCIe Completion"], 20)
         self.assertEqual(row["Cache Hit"], "Yes")
         self.assertEqual(row["Mapping"], 0)
         self.assertEqual(row["Time in TSU"], 0)
-        self.assertEqual(row["PCIe Xfer (CQ)"], 20)
-        self.assertEqual(row["PCIe Xfer (Data)"], expected_payload_latency)
 
     def test_csv_request_pcie_merges_all_three_nvme_command_phases(self):
         recorder = RequestLatencyRecorder()
@@ -548,7 +533,7 @@ class TestRequestLatencyRecorder(unittest.TestCase):
         recorder._append_interval(
             rec,
             "intervals",
-            "pcie_host_to_device",
+            "pcie_request",
             0,
             8,
             {"message_type": MessageType.READ_REQ.value, "pcie_phase": "doorbell"},
@@ -556,7 +541,7 @@ class TestRequestLatencyRecorder(unittest.TestCase):
         recorder._append_interval(
             rec,
             "intervals",
-            "pcie_device_to_host",
+            "pcie_request",
             8,
             16,
             {"message_type": MessageType.READ_REQ.value, "pcie_phase": "sq_read_request"},
@@ -564,7 +549,7 @@ class TestRequestLatencyRecorder(unittest.TestCase):
         recorder._append_interval(
             rec,
             "intervals",
-            "pcie_host_to_device",
+            "pcie_request",
             16,
             41,
             {"message_type": MessageType.READ_REQ.value, "pcie_phase": "sq_entry"},
@@ -573,9 +558,9 @@ class TestRequestLatencyRecorder(unittest.TestCase):
         recorder.note_request_completed(req, 41)
 
         row = recorder.export_csv_rows()[0]
-        self.assertEqual(row["PCIe Xfer"], 41)
+        self.assertEqual(row["PCIe Request"], 41)
 
-    def test_pcie_report_splits_directional_queue_wait_and_wire_time(self):
+    def test_pcie_report_captures_request_completion_and_wire(self):
         recorder = RequestLatencyRecorder()
         req = self._make_req(RequestType.READ, "req-pcie-split")
         recorder.register_request(req, scheduled_time=0)
@@ -605,12 +590,15 @@ class TestRequestLatencyRecorder(unittest.TestCase):
 
         exported = recorder.export()["requests"][0]
         row = recorder.export_csv_rows()[0]
-        self.assertEqual(exported["breakdown"]["pcie_host_to_device_queue_wait"], 8)
-        self.assertEqual(exported["breakdown"]["pcie_device_to_host_queue_wait"], 2)
-        self.assertEqual(exported["breakdown"]["pcie_host_to_device_wire"], 20)
-        self.assertEqual(exported["breakdown"]["pcie_device_to_host_wire"], 5)
-        self.assertEqual(row["PCIe Queue (Host)"], 8)
-        self.assertEqual(row["PCIe Queue (Device)"], 2)
+        # PCIe Request: doorbell [0,10] + sq_entry [2,20] → merged [0,20] = 20
+        self.assertEqual(exported["breakdown"]["pcie_request"], 20)
+        # PCIe Completion: REQ_COMP [5,12] = 7
+        self.assertEqual(exported["breakdown"]["pcie_completion"], 7)
+        # PCIe Wire: doorbell wire [0,10] + sq_entry wire [10,20] + cq wire [7,12]
+        # → merged [0,20] = 20
+        self.assertEqual(exported["breakdown"]["pcie_wire"], 20)
+        self.assertEqual(row["PCIe Request"], 20)
+        self.assertEqual(row["PCIe Completion"], 7)
         self.assertEqual(row["PCIe Wire"], 20)
 
     def test_csv_onfi_xfer_includes_channel_wait_and_keeps_service_separate(self):
@@ -624,7 +612,7 @@ class TestRequestLatencyRecorder(unittest.TestCase):
         recorder._append_interval(
             rec,
             "intervals",
-            "pcie_host_to_device",
+            "pcie_request",
             5,
             10,
             {"message_type": MessageType.READ_REQ.value},
@@ -679,7 +667,7 @@ class TestRequestLatencyRecorder(unittest.TestCase):
         recorder._append_interval(
             rec,
             "intervals",
-            "pcie_device_to_host",
+            "pcie_completion",
             65,
             70,
             {"message_type": MessageType.REQ_COMP.value},
@@ -703,7 +691,7 @@ class TestRequestLatencyRecorder(unittest.TestCase):
 
         rec = recorder.requests[req.report_req_id]
         self.assertEqual(rec.mapping_resolution_counts["metadata_hit"], 1)
-        self.assertEqual(recorder._cache_hit_value(rec), "No")
+        self.assertEqual(recorder._csv_cache_hit_value(rec), "No")
 
 
 if __name__ == "__main__":

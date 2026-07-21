@@ -9,14 +9,9 @@ from typing import Any, Optional
 
 from .common import (
     MessageType,
-    PCIE_INTERFACE_BANDWIDTH_BYTES_PER_NS,
-    PCIE_TLP_MAX_PAYLOAD_BYTES,
-    PCIE_TLP_PACKET_OVERHEAD_BYTES,
-    REQUEST_STATUS_SUCCESS,
     Request,
     RequestType,
     SECTOR_PER_PAGE,
-    SECTOR_SIZE_BYTES,
     Transaction,
     TransactionType,
 )
@@ -25,8 +20,9 @@ from .common import (
 BASE_STAGE_NAMES = (
     "host_sq_wait",
     "host_dispatch",
-    "pcie_host_to_device",
-    "pcie_device_to_host",
+    "pcie_request",
+    "pcie_completion",
+    "pcie_wire",
     "amu_mapping_wait",
     "tsu_queue_wait",
     "phy_channel_wait",
@@ -36,17 +32,7 @@ BASE_STAGE_NAMES = (
     "phy_data_out",
 )
 
-# Diagnostic children of the legacy enqueue-to-delivery PCIe stages.  They
-# are exported but excluded from reconciliation to avoid double counting the
-# same PCIe interval together with its parent stage.
-PCIE_DETAIL_STAGE_NAMES = (
-    "pcie_host_to_device_queue_wait",
-    "pcie_device_to_host_queue_wait",
-    "pcie_host_to_device_wire",
-    "pcie_device_to_host_wire",
-)
-
-ALL_INTERVAL_STAGE_NAMES = BASE_STAGE_NAMES + PCIE_DETAIL_STAGE_NAMES
+ALL_INTERVAL_STAGE_NAMES = BASE_STAGE_NAMES
 
 RECONCILIATION_STAGE_NAMES = ("overlap_latency", "untracked_latency")
 
@@ -60,13 +46,10 @@ CSV_COLUMN_NAMES = (
     "Mapping",
     "Time in TSU",
     "Backpressure Wait Time",
-    # PCIe aggregate and raw queue/service details
-    "PCIe Xfer",
-    "PCIe Queue (Host)",
-    "PCIe Queue (Device)",
+    # PCIe timing
+    "PCIe Request",
+    "PCIe Completion",
     "PCIe Wire",
-    "PCIe Xfer (Data)",
-    "PCIe Xfer (CQ)",
     # NAND/ONFI timing
     "ONFI Xfer",
     "ONFI Service",
@@ -81,23 +64,24 @@ CSV_COLUMN_NAMES = (
     "Write Amplification",
 )
 
-RESPONSE_DATA_MESSAGE_TYPES = {
+COMPLETION_PCIE_MESSAGE_TYPES = {
     MessageType.READ_RES_SEND_BACK.value,
     MessageType.SEARCH_RES_SEND_BACK.value,
     MessageType.COMPUTE_RES_SEND_BACK.value,
+    MessageType.REQ_COMP.value,
 }
 
-STATUS_MESSAGE_TYPES = {MessageType.REQ_COMP.value}
-REQUEST_SIDE_DEVICE_TO_HOST_MESSAGE_TYPES = {
-    MessageType.READ_REQ.value,
-    MessageType.WRITE_REQ.value,
-    MessageType.SEARCH_REQ.value,
-    MessageType.COMPUTE_REQ.value,
-    MessageType.STATIC_WRITE_REQ.value,
+# Messages that are part of the request setup phase — the HIL cannot start
+# processing until these complete (data-fetch for writes, search, compute).
+REQUEST_DATA_PCIE_MESSAGE_TYPES = {
     MessageType.WRITE_DATA_REQ.value,
     MessageType.SEARCH_DATA_REQ.value,
     MessageType.COMPUTE_DATA_REQ.value,
     MessageType.STATIC_WRITE_DATA_REQ.value,
+    MessageType.WRITE_DATA.value,
+    MessageType.SEARCH_DATA.value,
+    MessageType.COMPUTE_DATA.value,
+    MessageType.STATIC_WRITE_DATA.value,
 }
 
 WRITE_LIKE_REQUEST_TYPES = {RequestType.WRITE.value, RequestType.STATIC_WRITE.value}
@@ -284,9 +268,6 @@ class RequestLatencyRecorder:
         info = self._pcie_messages.pop(id(message), None)
         if info is None:
             return
-        stage = "pcie_host_to_device" if info["direction"] == "host_to_device" else "pcie_device_to_host"
-        queue_stage = f"{stage}_queue_wait"
-        wire_stage = f"{stage}_wire"
         transfer_start = info["transfer_start"]
         if transfer_start is None:
             transfer_start = info["start"]
@@ -297,34 +278,43 @@ class RequestLatencyRecorder:
             "transfer_bytes": info["transfer_bytes"],
             "pcie_phase": info["pcie_phase"],
         }
+        pcie_phase = info["pcie_phase"]
+        message_type = info["message_type"]
         for req_id in info["request_ids"]:
             rec = self.requests.get(req_id)
             if rec is None:
                 continue
+            # PCIe Wire: pure wire time for every PCIe message (no queuing)
             self._append_interval(
                 rec,
                 "intervals",
-                stage,
-                info["start"],
-                timestamp,
-                metadata,
-            )
-            self._append_interval(
-                rec,
-                "intervals",
-                queue_stage,
-                info["start"],
-                transfer_start,
-                metadata,
-            )
-            self._append_interval(
-                rec,
-                "intervals",
-                wire_stage,
+                "pcie_wire",
                 transfer_start,
                 timestamp,
                 metadata,
             )
+            # PCIe Request: Doorbell → SQ Fetch → SQ Entry, plus data-fetch
+            # transfers needed before the HIL can begin processing (total,
+            # including PCIe queuing).
+            if pcie_phase is not None or message_type in REQUEST_DATA_PCIE_MESSAGE_TYPES:
+                self._append_interval(
+                    rec,
+                    "intervals",
+                    "pcie_request",
+                    info["start"],
+                    timestamp,
+                    metadata,
+                )
+            # PCIe Completion: response data + CQE (total, incl. queuing)
+            if message_type in COMPLETION_PCIE_MESSAGE_TYPES:
+                self._append_interval(
+                    rec,
+                    "intervals",
+                    "pcie_completion",
+                    info["start"],
+                    timestamp,
+                    metadata,
+                )
 
     def note_mapping_wait_start(self, req: Optional[Request], wait_key: str, timestamp: int) -> None:
         req_id = self._request_id(req)
@@ -729,12 +719,9 @@ class RequestLatencyRecorder:
                     "Mapping": self._mapping_time(rec),
                     "Time in TSU": self._user_tsu_wait_time(rec),
                     "Backpressure Wait Time": self.maintenance_stats["backpressure_wait_time"],
-                    "PCIe Xfer": self._pcie_request_send_time(rec),
-                    "PCIe Queue (Host)": self._pcie_queue_time(rec, "host_to_device"),
-                    "PCIe Queue (Device)": self._pcie_queue_time(rec, "device_to_host"),
+                    "PCIe Request": self._pcie_request_time(rec),
+                    "PCIe Completion": self._pcie_completion_time(rec),
                     "PCIe Wire": self._pcie_wire_time(rec),
-                    "PCIe Xfer (Data)": self._pcie_data_return_time(rec),
-                    "PCIe Xfer (CQ)": self._pcie_status_return_time(rec),
                     "ONFI Xfer": self._user_phy_transfer_time(rec),
                     "ONFI Service": self._user_phy_service_time(rec),
                     "Array Exec": self._user_phy_array_time(rec),
@@ -893,18 +880,29 @@ class RequestLatencyRecorder:
             rec.intervals["host_dispatch"] + rec.intervals["host_sq_wait"]
         )
 
-    def _pcie_request_send_time(self, rec: RequestLatencyState) -> int:
-        # Report the measured request-side PCIe interval directly.  Deriving
-        # this field as the residual of end-to-end latency makes unrelated,
-        # untracked controller/channel gaps appear as PCIe time when stages
-        # overlap or contend.
-        return self._raw_request_side_pcie_time(rec)
+    def _pcie_request_time(self, rec: RequestLatencyState) -> int:
+        """Doorbell → SQ Fetch → SQ Entry total time including PCIe queuing."""
+        return self._merged_stage_durations(rec.intervals["pcie_request"])
+
+    def _pcie_completion_time(self, rec: RequestLatencyState) -> int:
+        """Data return + CQE total time including Device-side PCIe queuing."""
+        return self._merged_stage_durations(rec.intervals["pcie_completion"])
+
+    def _pcie_wire_time(self, rec: RequestLatencyState) -> int:
+        """Pure PCIe wire time for all messages (no queuing)."""
+        return self._merged_stage_durations(rec.intervals["pcie_wire"])
+
+    def _pcie_request_end(self, rec: RequestLatencyState) -> int:
+        intervals = rec.intervals["pcie_request"]
+        if not intervals:
+            return self._issue_time(rec) or 0
+        return max(item["end"] for item in intervals)
 
     def _mapping_time(self, rec: RequestLatencyState) -> int:
         mapping_end = self._mapping_phase_end(rec)
         if mapping_end is None:
             return 0
-        return max(0, mapping_end - self._request_side_pcie_end(rec))
+        return max(0, mapping_end - self._pcie_request_end(rec))
 
     def _user_tsu_wait_time(self, rec: RequestLatencyState) -> int:
         return self._transaction_stage_duration(
@@ -984,35 +982,6 @@ class RequestLatencyRecorder:
         ]
         return _merged_duration(filtered)
 
-    def _request_side_pcie_intervals(self, rec: RequestLatencyState) -> list[dict[str, Any]]:
-        request_intervals = list(rec.intervals["pcie_host_to_device"])
-        request_intervals.extend(
-            interval
-            for interval in rec.intervals["pcie_device_to_host"]
-            if interval.get("message_type") in REQUEST_SIDE_DEVICE_TO_HOST_MESSAGE_TYPES
-        )
-        return request_intervals
-
-    def _raw_request_side_pcie_time(self, rec: RequestLatencyState) -> int:
-        return self._merged_stage_durations(self._request_side_pcie_intervals(rec))
-
-    def _pcie_queue_time(self, rec: RequestLatencyState, direction: str) -> int:
-        return self._merged_stage_durations(
-            rec.intervals[f"pcie_{direction}_queue_wait"]
-        )
-
-    def _pcie_wire_time(self, rec: RequestLatencyState) -> int:
-        return self._merged_stage_durations(
-            rec.intervals["pcie_host_to_device_wire"]
-            + rec.intervals["pcie_device_to_host_wire"]
-        )
-
-    def _request_side_pcie_end(self, rec: RequestLatencyState) -> int:
-        intervals = self._request_side_pcie_intervals(rec)
-        if not intervals:
-            return self._issue_time(rec) or 0
-        return max(item["end"] for item in intervals)
-
     def _mapping_phase_end(self, rec: RequestLatencyState) -> Optional[int]:
         mapping_intervals = list(rec.intervals["amu_mapping_wait"])
         for stage in (
@@ -1060,73 +1029,6 @@ class RequestLatencyRecorder:
         if rec.mapping_resolution_counts["cmt_hit"] == total_mapping_lookups:
             return "Yes"
         return "No"
-
-    def _cache_hit_value(self, rec: RequestLatencyState) -> str:
-        if rec.req_type in NON_MAPPING_REQUEST_TYPES:
-            return "/"
-        total_mapping_lookups = sum(rec.mapping_resolution_counts.values())
-        if total_mapping_lookups == 0:
-            return "No"
-        if rec.mapping_resolution_counts["cmt_hit"] == total_mapping_lookups:
-            return "Yes"
-        return "No"
-
-    def _pcie_status_return_time(
-        self,
-        rec: RequestLatencyState,
-    ) -> int:
-        return self._filtered_interval_duration(
-            rec.intervals["pcie_device_to_host"],
-            STATUS_MESSAGE_TYPES,
-        )
-
-    def _pcie_data_return_time(
-        self,
-        rec: RequestLatencyState,
-    ) -> int:
-        explicit_data_latency, has_explicit_response = self._filtered_interval_duration(
-            rec.intervals["pcie_device_to_host"],
-            RESPONSE_DATA_MESSAGE_TYPES,
-            return_response_presence=True,
-        )
-        if rec.req_type in WRITE_LIKE_REQUEST_TYPES:
-            return 0
-        if has_explicit_response or rec.status != REQUEST_STATUS_SUCCESS:
-            return explicit_data_latency
-        return self._estimate_response_payload_latency(rec)
-
-    def _estimate_response_payload_latency(self, rec: RequestLatencyState) -> int:
-        if rec.size is None or rec.size <= 0:
-            return 0
-        if PCIE_INTERFACE_BANDWIDTH_BYTES_PER_NS <= 0:
-            raise ValueError("PCIE_INTERFACE_BANDWIDTH_BYTES_PER_NS must be positive")
-        payload_bytes = rec.size * SECTOR_SIZE_BYTES
-        packet_count = ceil(payload_bytes / PCIE_TLP_MAX_PAYLOAD_BYTES)
-        transfer_bytes = (
-            payload_bytes + packet_count * PCIE_TLP_PACKET_OVERHEAD_BYTES
-        )
-        return ceil(transfer_bytes / PCIE_INTERFACE_BANDWIDTH_BYTES_PER_NS)
-
-    def _filtered_interval_duration(
-        self,
-        intervals: list[dict[str, Any]],
-        allowed_message_types: set[str],
-        *,
-        return_response_presence: bool = False,
-    ) -> int | tuple[int, bool]:
-        selected: list[tuple[int, int]] = []
-        has_response_data = False
-        for interval in intervals:
-            message_type = interval.get("message_type")
-            if message_type not in allowed_message_types:
-                continue
-            selected.append((interval["start"], interval["end"]))
-            if message_type in RESPONSE_DATA_MESSAGE_TYPES:
-                has_response_data = True
-        duration = _merged_duration(selected)
-        if return_response_presence:
-            return duration, has_response_data
-        return duration
 
     def _csv_value(self, value: Optional[int]) -> int | str:
         if value is None:
