@@ -313,11 +313,29 @@ PY
 - `requests[*].status`：请求是否成功。
 - `requests[*].error_message`：错误原因。
 - `requests[*].breakdown`：host-visible latency 分解。
+- `requests[*].breakdown.phy_channel_wait`：ONFI command/data task 已入队但尚未占用 channel 的原始等待时间。
 - `requests[*].persistence_*`：写入持久化路径。
 - `meta.maintenance.gc_count`：GC 次数。
 - `meta.maintenance.gc_relocated_pages`：GC 搬迁页数。
 - `meta.maintenance.gc_erased_blocks`：GC erase 次数。
 - `meta.maintenance.write_amplification`：写放大。
+
+CSV 时间列口径：
+
+CSV 列按子系统排列：请求基本信息 → Host/控制器 → PCIe → NAND/ONFI → 能耗 → 状态与维护统计。同类 PCIe 和 ONFI 时间因此相邻，方便直接横向比较。
+
+| 列 | 含义 |
+|---|---|
+| `PCIe Xfer` | 请求提交阶段从 PCIe 入队到到达对端的原始区间，兼容旧报表，包含排队和线上传输。 |
+| `PCIe Queue (Host)` | 与该请求关联的 H2D 消息在 host 侧发送 FIFO 中等待队首的合并时间。 |
+| `PCIe Queue (Device)` | 与该请求关联的 D2H 消息在 device 侧发送 FIFO 中等待队首的合并时间。 |
+| `PCIe Wire` | 与该请求关联的消息实际占用 H2D/D2H 链路的合并时间；两个方向同时传输时重叠区间只计一次。 |
+| `Time in TSU` | USER transaction 从 TSU enqueue 到 TSU dispatch 的原始等待，不包含后续 PHY channel 等待。 |
+| `ONFI Xfer` | ONFI command/data task 从进入 channel queue 到传输完成的原始区间，包含 channel 排队，不包含 `Array Exec`。 |
+| `ONFI Service` | 仅统计 ONFI command、data-in、data-out 实际占用 channel 的区间，不包含等待。 |
+| `Array Exec` | NAND die 内部执行时间。 |
+
+`ONFI Xfer` 与 `PCIe Xfer` 使用一致的 raw interval 口径，都是“队列等待 + 实际传输”。PCIe 的拆分明细来自真实 FIFO 入队、队首开始服务和到达对端三个事件，不使用残差算法。JSON 同时提供 `pcie_host_to_device_queue_wait`、`pcie_device_to_host_queue_wait`、`pcie_host_to_device_wire` 和 `pcie_device_to_host_wire` 原始区间。对于包含多笔并行 transaction 的请求，不同时间列可能重叠，因此不能默认把 CSV 所有时间列直接相加；应使用 JSON 中的 `overlap_latency` 和 `untracked_latency` 做时间轴核对。`PCIe Xfer (Data)` 与 `PCIe Xfer (CQ)` 也存在包含关系，前者不应再次加入 host-visible completion path。
 
 ## Debug
 
