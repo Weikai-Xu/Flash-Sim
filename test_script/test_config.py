@@ -12,6 +12,7 @@ from flash_sim.config import (
     FlashGeometry,
     FlashAddress,
     FlashTechnology,
+    _required_pages_by_plane,
     build_flash_config,
     build_flash_config_for_capacity,
 )
@@ -97,6 +98,145 @@ def test_build_flash_config_for_capacity_can_reject_insufficient_locked_geometry
             },
             required_sectors=1024,
             allow_geometry_growth=False,
+        )
+
+
+def _single_page_block_source(**overrides):
+    geometry = {
+        "channel_no": 1,
+        "chip_per_channel": 1,
+        "dies": 1,
+        "planes_per_die": 1,
+        "blocks_per_plane": 4,
+        "layers_per_block": 1,
+        "sl_per_block": 1,
+        "ssl_per_sl": 1,
+        "sub_blocks_per_block": 1,
+        "sector_per_page": 4,
+        "static_chip_per_channel": 0,
+    }
+    geometry.update(overrides)
+    return {"geometry": geometry}
+
+
+def test_capacity_generation_counts_shared_boundary_pages_once():
+    source = _single_page_block_source()
+    placement_ranges = [
+        {"start_lha": 0, "size": 5},
+        {"start_lha": 5, "size": 5},
+        {"start_lha": 10, "size": 2},
+    ]
+
+    config, report = build_flash_config_for_capacity(
+        source,
+        placement_ranges=placement_ranges,
+        capacity_margin=0.0,
+    )
+
+    assert config.geometry.blocks_per_plane == 4
+    assert report["generated_sectors"] == 12
+    assert report["geometry_changed"] == {}
+    assert _required_pages_by_plane(
+        placement_ranges,
+        config.geometry,
+        config.runtime.plane_allocation,
+    ) == {(0, 0, 0, 0): 3}
+
+
+def test_capacity_generation_uses_cwdp_plane_allocation_scheme():
+    source = _single_page_block_source(
+        channel_no=2,
+        chip_per_channel=3,
+        dies=2,
+        planes_per_die=2,
+        blocks_per_plane=4,
+        sector_per_page=8,
+        static_chip_per_channel=1,
+    )
+    source["runtime"] = {"plane_allocation_scheme": "CWDP"}
+    placement_ranges = [
+        {"start_lha": 0, "size": 1},
+        {"start_lha": 8, "size": 1},
+        {"start_lha": 16, "size": 1},
+        {"start_lha": 64, "size": 1},
+    ]
+
+    config, report = build_flash_config_for_capacity(
+        source,
+        placement_ranges=placement_ranges,
+        capacity_margin=0.0,
+    )
+
+    assert config.runtime.plane_allocation == "CWDP"
+    assert report["geometry_changed"] == {}
+    assert _required_pages_by_plane(
+        placement_ranges,
+        config.geometry,
+        config.runtime.plane_allocation,
+    ) == {
+        (0, 0, 0, 0): 1,
+        (1, 0, 0, 0): 1,
+        (0, 1, 0, 0): 1,
+        (0, 0, 0, 1): 1,
+    }
+
+
+def test_flashsim_test_gpu_baseline_shaped_placement_stays_compact():
+    hidden = 4096
+    dtype_bytes = 2
+    dense_sectors = hidden * hidden * dtype_bytes // SECTOR_SIZE_BYTES
+    ffn_hidden = hidden * 8 // 3
+    ffn_sectors = hidden * ffn_hidden * dtype_bytes // SECTOR_SIZE_BYTES
+    placement_ranges = []
+    cursor = 0
+    for _layer in range(32):
+        for sectors in (
+            dense_sectors,
+            dense_sectors,
+            dense_sectors,
+            dense_sectors,
+            ffn_sectors,
+            ffn_sectors,
+        ):
+            placement_ranges.append({"start_lha": cursor, "size": sectors})
+            cursor += sectors
+
+    config, report = build_flash_config_for_capacity(
+        {
+            "geometry": {
+                "channel_no": 8,
+                "chip_per_channel": 4,
+                "dies": 4,
+                "planes_per_die": 4,
+                "blocks_per_plane": 64,
+                "layers_per_block": 1,
+                "sl_per_block": 2,
+                "ssl_per_sl": 4,
+                "sub_blocks_per_block": 8,
+                "sector_per_page": 64,
+                "static_chip_per_channel": 1,
+            },
+            "runtime": {"plane_allocation_scheme": "CWDP"},
+        },
+        placement_ranges=placement_ranges,
+        capacity_margin=0.05,
+    )
+
+    assert report["required_sectors"] == cursor
+    assert report["required_target_sectors"] <= report["generated_sectors"]
+    assert config.geometry.blocks_per_plane < 65536
+    assert config.geometry.blocks_per_plane <= 256
+
+
+def test_build_flash_config_for_capacity_rejects_invalid_plane_allocation_value():
+    with pytest.raises(ValueError, match="SPIRAL"):
+        build_flash_config_for_capacity(
+            {
+                **_single_page_block_source(),
+                "runtime": {"plane_allocation_scheme": "SPIRAL"},
+            },
+            placement_ranges=[{"start_lha": 0, "size": 1}],
+            capacity_margin=0.0,
         )
 
 

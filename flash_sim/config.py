@@ -36,15 +36,15 @@ DEFAULT_DIES = 4
 DEFAULT_PLANES_PER_DIE = 4
 DEFAULT_BLOCKS_PER_PLANE = 1024
 DEFAULT_LAYERS_PER_BLOCK = 128
-DEFAULT_SL_PER_BLOCK = 2
+DEFAULT_SL_PER_BLOCK = 1
 DEFAULT_SSL_PER_SL = 4
 DEFAULT_SUB_BLOCKS_PER_BLOCK = DEFAULT_SL_PER_BLOCK * DEFAULT_SSL_PER_SL
 SECTOR_SIZE_BYTES = 512
-DEFAULT_SECTOR_PER_PAGE = 32
+DEFAULT_SECTOR_PER_PAGE = 64
 DEFAULT_COMPUTE_MAX_PARALLEL_SL = 256
 DEFAULT_SEARCH_MAX_PARALLEL_WL = 256
 DEFAULT_WL_PER_STRING = 128
-DEFAULT_BL_PER_PLANE = 16 * 1024 * 8
+DEFAULT_BL_PER_PLANE = 262144
 DEFAULT_SEARCH_INPUT_BITS_PER_WL = 1
 DEFAULT_SEARCH_MATCH_BITS_PER_BL = 1
 DEFAULT_COMPUTE_INPUT_BITS_PER_SL = 8
@@ -703,7 +703,7 @@ class RuntimeConfig:
     precondition_fill_ratio: float | None = None
     precondition_mode: str = "capacity-fill"
     precondition_seed: int = 42
-    plane_allocation: str = "CWDP"  # "PAGE_LEVEL" or "CWDP"
+    plane_allocation: str = "PAGE_LEVEL"  # "PAGE_LEVEL" or "CWDP"
 
     @property
     def plane_allocation_scheme(self) -> str:
@@ -768,7 +768,10 @@ class RuntimeConfig:
         if self.precondition_mode not in ("capacity-fill", "trace-cover"):
             raise ValueError("precondition_mode must be capacity-fill or trace-cover")
         if self.plane_allocation not in ("PAGE_LEVEL", "CWDP"):
-            raise ValueError("plane_allocation must be PAGE_LEVEL or CWDP")
+            raise ValueError(
+                "plane_allocation must be PAGE_LEVEL or CWDP, "
+                f"got {self.plane_allocation!r}"
+            )
 
 
 @dataclass
@@ -1190,22 +1193,47 @@ def _random_data_sector_capacity(geometry: FlashGeometry) -> tuple[int, int, int
     return max(0, data_pages * geometry.sector_per_page), total_random_pages, mapping_pages
 
 
-def _plane_for_lpa(lpa: int, geometry: FlashGeometry) -> tuple[int, int, int, int]:
-    pages_per_plane = geometry.blocks_per_plane * geometry.pages_per_block
-    value = int(lpa) // max(1, pages_per_plane)
-    plane_id = value % geometry.planes_per_die
-    value //= geometry.planes_per_die
-    die_id = value % geometry.dies
-    value //= geometry.dies
-    chip_id = value % geometry.chip_per_channel
-    channel_id = value // geometry.chip_per_channel
-    return channel_id, chip_id, die_id, plane_id
+def _plane_for_lpa(
+    lpa: int,
+    geometry: FlashGeometry,
+    plane_allocation: str,
+) -> tuple[int, int, int, int]:
+    if plane_allocation == "CWDP":
+        non_static_chips = geometry.chip_per_channel - geometry.static_chip_per_channel
+        if non_static_chips <= 0:
+            raise ValueError("CWDP plane allocation requires at least one non-static chip")
+        value = int(lpa)
+        channel_id = value % geometry.channel_no
+        chip_id = (value // geometry.channel_no) % non_static_chips
+        die_id = (value // (geometry.channel_no * non_static_chips)) % geometry.dies
+        plane_id = (
+            value
+            // (geometry.channel_no * non_static_chips * geometry.dies)
+        ) % geometry.planes_per_die
+        return channel_id, chip_id, die_id, plane_id
+
+    if plane_allocation == "PAGE_LEVEL":
+        pages_per_plane = geometry.blocks_per_plane * geometry.pages_per_block
+        value = int(lpa) // max(1, pages_per_plane)
+        plane_id = value % geometry.planes_per_die
+        value //= geometry.planes_per_die
+        die_id = value % geometry.dies
+        value //= geometry.dies
+        chip_id = value % geometry.chip_per_channel
+        channel_id = value // geometry.chip_per_channel
+        return channel_id, chip_id, die_id, plane_id
+
+    raise ValueError(f"unsupported plane_allocation value: {plane_allocation!r}")
 
 
-def _required_pages_by_plane(placement_ranges: list[Any] | None, geometry: FlashGeometry) -> dict[tuple[int, int, int, int], int]:
-    counts: dict[tuple[int, int, int, int], int] = {}
+def _required_pages_by_plane(
+    placement_ranges: list[Any] | None,
+    geometry: FlashGeometry,
+    plane_allocation: str,
+) -> dict[tuple[int, int, int, int], int]:
+    lpas_by_plane: dict[tuple[int, int, int, int], set[int]] = {}
     if not placement_ranges:
-        return counts
+        return {}
     for item in placement_ranges:
         if isinstance(item, dict):
             start_lha = int(item.get("start_lha", item.get("flash_start_lha", 0)) or 0)
@@ -1220,9 +1248,9 @@ def _required_pages_by_plane(placement_ranges: list[Any] | None, geometry: Flash
         start_lpa = start_lha // geometry.sector_per_page
         end_lpa = (start_lha + sector_count - 1) // geometry.sector_per_page
         for lpa in range(start_lpa, end_lpa + 1):
-            key = _plane_for_lpa(lpa, geometry)
-            counts[key] = counts.get(key, 0) + 1
-    return counts
+            key = _plane_for_lpa(lpa, geometry, plane_allocation)
+            lpas_by_plane.setdefault(key, set()).add(lpa)
+    return {key: len(lpas) for key, lpas in lpas_by_plane.items()}
 
 
 def _preconditionable_pages_per_plane(geometry: FlashGeometry) -> int:
@@ -1268,7 +1296,11 @@ def build_flash_config_for_capacity(
     def needs_growth(current_config: FlashConfig, current_generated: int) -> bool:
         if target > current_generated:
             return True
-        required_by_plane = _required_pages_by_plane(placement_ranges, current_config.geometry)
+        required_by_plane = _required_pages_by_plane(
+            placement_ranges,
+            current_config.geometry,
+            current_config.runtime.plane_allocation,
+        )
         if not required_by_plane:
             return False
         return max(required_by_plane.values()) > _preconditionable_pages_per_plane(current_config.geometry)
