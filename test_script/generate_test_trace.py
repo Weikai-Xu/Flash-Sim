@@ -27,17 +27,18 @@ from flash_sim.FTL import Address_Mapping_Unit, Block_Manager
 from flash_sim.PHY import PHY
 from flash_sim.common import (
     BLOCK_PER_PLANE,
-    CHANNEL_NO,
-    CHIP_PER_CHANNEL,
+    COMPUTE_BASE_LHA,
+    COMPUTE_REGION_END_LHA,
+    DATA_CHIP_PER_CHANNEL,
     DIE_PER_CHIP,
     GC_WL_MANAGER_FREE_BLOCK_POOL_THRESHOLD,
     PAGE_PER_BLOCK,
     PLANE_PER_DIE,
     SECTOR_PER_PAGE,
-    SL_PER_BLOCK,
-    SSL_PER_SL,
+    SEARCH_BASE_LHA,
+    SEARCH_REGION_END_LHA,
     STATIC_BASE_LHA,
-    STATIC_CHIP_PER_CHANNEL,
+    STATIC_REGION_END_LHA,
 )
 
 
@@ -82,6 +83,10 @@ class RuntimeContext:
     random_access_data_pages: int
     total_random_access_pages: int
     mapping_page_count: int
+    compute_start_lha: int
+    compute_end_lha: int
+    search_start_lha: int
+    search_end_lha: int
     static_start_lha: int
     static_end_lha: int
 
@@ -159,15 +164,7 @@ def _make_runtime_fixture(pre_data_path: Path) -> tuple[Block_Manager, PHY, Addr
 
 
 def _static_end_lha() -> int:
-    return STATIC_BASE_LHA + (
-        CHANNEL_NO
-        * STATIC_CHIP_PER_CHANNEL
-        * DIE_PER_CHIP
-        * PLANE_PER_DIE
-        * BLOCK_PER_PLANE
-        * SL_PER_BLOCK
-        * SSL_PER_SL
-    )
+    return STATIC_REGION_END_LHA
 
 
 def _load_precondition_records(pre_data_path: Path) -> tuple[dict[str, Any], ...]:
@@ -191,8 +188,8 @@ def plane_key_for_random_access_lpa(lpa: int) -> PlaneKey:
     plane_value //= PLANE_PER_DIE
     die = plane_value % DIE_PER_CHIP
     plane_value //= DIE_PER_CHIP
-    chip = plane_value % CHIP_PER_CHANNEL
-    channel = plane_value // CHIP_PER_CHANNEL
+    chip = plane_value % DATA_CHIP_PER_CHANNEL
+    channel = plane_value // DATA_CHIP_PER_CHANNEL
     return PlaneKey(channel=channel, chip=chip, die=die, plane=plane)
 
 
@@ -224,7 +221,7 @@ def _snapshot_planes(
 ) -> tuple[PlaneSnapshot, ...]:
     snapshots: list[PlaneSnapshot] = []
     for channel in range(block_manager.channel_no):
-        for chip in range(block_manager.chip_no_per_channel - STATIC_CHIP_PER_CHANNEL):
+        for chip in range(DATA_CHIP_PER_CHANNEL):
             for die in range(block_manager.die_no_per_chip):
                 for plane in range(block_manager.plane_no_per_die):
                     key = PlaneKey(channel=channel, chip=chip, die=die, plane=plane)
@@ -273,6 +270,10 @@ def build_runtime_context(pre_data_path: str | Path = DEFAULT_PRE_DATA_PATH) -> 
         random_access_data_pages=amu.random_access_data_pages,
         total_random_access_pages=amu.total_random_access_pages,
         mapping_page_count=amu.mapping_page_count,
+        compute_start_lha=COMPUTE_BASE_LHA,
+        compute_end_lha=COMPUTE_REGION_END_LHA,
+        search_start_lha=SEARCH_BASE_LHA,
+        search_end_lha=SEARCH_REGION_END_LHA,
         static_start_lha=STATIC_BASE_LHA,
         static_end_lha=_static_end_lha(),
     )
@@ -380,13 +381,12 @@ def build_static_requests(
     context: RuntimeContext,
     rng: random.Random,
 ) -> list[PendingCommand]:
-    span = context.static_end_lha - context.static_start_lha
     search_size = 1
     compute_size = 1
-    max_search_start = context.static_end_lha - search_size
-    max_compute_start = context.static_end_lha - compute_size
-    search_start = rng.randint(context.static_start_lha, max_search_start)
-    compute_start = rng.randint(context.static_start_lha, max_compute_start)
+    max_search_start = context.search_end_lha - search_size
+    max_compute_start = context.compute_end_lha - compute_size
+    search_start = rng.randint(context.search_start_lha, max_search_start)
+    compute_start = rng.randint(context.compute_start_lha, max_compute_start)
     return [
         PendingCommand(
             request_id="static-search-000",

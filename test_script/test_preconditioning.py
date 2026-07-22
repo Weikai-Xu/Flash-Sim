@@ -7,8 +7,8 @@ from flash_sim.FTL import Address_Mapping_Unit, Block_Manager
 from flash_sim.PHY import PHY
 from flash_sim.common import (
     BLOCK_PER_PLANE,
+    DATA_CHIP_PER_CHANNEL,
     PAGE_PER_BLOCK,
-    STATIC_CHIP_PER_CHANNEL,
 )
 
 
@@ -125,7 +125,7 @@ class TestPreconditioning(unittest.TestCase):
 
     def test_static_chip_skipped(self):
         """Preconditioning leaves the dedicated static chip untouched."""
-        static_chip_id = self.bm.chip_no_per_channel - STATIC_CHIP_PER_CHANNEL
+        static_chip_id = DATA_CHIP_PER_CHANNEL
         static_plane_bke = self.bm.block_keeping_book[0][static_chip_id][0][0]
         self.assertEqual(static_plane_bke.valid_page_count, 0)
         self.assertEqual(static_plane_bke.invalid_page_count, 0)

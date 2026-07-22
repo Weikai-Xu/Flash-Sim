@@ -1,4 +1,4 @@
-from flash_sim.common import SECTOR_PER_PAGE, STATIC_BASE_LHA
+from flash_sim.common import COMPUTE_BASE_LHA, SECTOR_PER_PAGE
 
 from test_script.generate_test_trace import (
     build_runtime_context,
@@ -23,11 +23,14 @@ def test_generate_trace_contains_all_primary_types_and_legal_domains():
 
     for command in generated.commands:
         if command["type"] in {"read", "write"}:
-            assert 0 <= command["start_lha"] < STATIC_BASE_LHA
-            assert command["start_lha"] + command["size"] <= STATIC_BASE_LHA
-        else:
-            assert context.static_start_lha <= command["start_lha"] < context.static_end_lha
-            assert command["start_lha"] + command["size"] <= context.static_end_lha
+            assert 0 <= command["start_lha"] < COMPUTE_BASE_LHA
+            assert command["start_lha"] + command["size"] <= COMPUTE_BASE_LHA
+        elif command["type"] == "compute":
+            assert context.compute_start_lha <= command["start_lha"] < context.compute_end_lha
+            assert command["start_lha"] + command["size"] <= context.compute_end_lha
+        elif command["type"] == "search":
+            assert context.search_start_lha <= command["start_lha"] < context.search_end_lha
+            assert command["start_lha"] + command["size"] <= context.search_end_lha
         if command["type"] == "compute":
             assert command["selected_wl"] == 0
 

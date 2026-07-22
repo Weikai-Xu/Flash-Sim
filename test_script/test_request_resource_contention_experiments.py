@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from flash_sim.common import STATIC_BASE_LHA
+from flash_sim.common import COMPUTE_BASE_LHA, SEARCH_BASE_LHA
 from test_script import request_resource_contention_experiments as exp
 
 
@@ -63,11 +63,14 @@ def test_size_validation_and_static_single_request_trace_planning():
     assert command == {
         "type": "compute",
         "time": 0,
-        "start_lha": STATIC_BASE_LHA,
+        "start_lha": COMPUTE_BASE_LHA,
         "size": 4,
         "selected_wl": 0,
     }
-    assert command["start_lha"] + command["size"] <= exp.static_region_end_exclusive()
+    assert command["start_lha"] + command["size"] <= exp.static_region_end_exclusive("compute")
+    search_command = exp.build_static_request_command("search", 4)
+    assert search_command["start_lha"] == SEARCH_BASE_LHA
+    assert search_command["start_lha"] + search_command["size"] <= exp.static_region_end_exclusive("search")
 
     plans = exp.plan_size_scan_traces([1, 2, 4])
     assert len(plans) == 6
@@ -156,11 +159,8 @@ def _page_read(lpa, time):
     }
 
 
-def _first_unpreconditionable_lpa():
-    for lpa in range(exp.read_impact_random_access_data_pages()):
-        if not exp.read_impact_lpa_is_preconditionable(lpa):
-            return lpa
-    raise AssertionError("expected at least one runtime-skipped LPA for static chip coverage")
+def _first_out_of_range_lpa():
+    return exp.read_impact_random_access_data_pages()
 
 
 def test_read_impact_trace_plans_have_identical_page_read_portions():
@@ -267,9 +267,13 @@ def test_read_impact_precondition_validation_rejects_missing_or_invalid_sectors(
         exp.select_read_impact_precondition_records(short_reads, pre_data_path=pre_data_path)
 
 
-def test_read_impact_generation_skips_lpas_runtime_preconditioning_will_not_warm(tmp_path):
-    skipped_lpa = _first_unpreconditionable_lpa()
+def test_read_impact_generation_uses_only_random_access_lpas_for_warmup(tmp_path):
+    skipped_lpa = _first_out_of_range_lpa()
     valid_lpas = [lpa for lpa in range(1, 16) if exp.read_impact_lpa_is_preconditionable(lpa)][:2]
+    assert all(
+        exp.read_impact_lpa_is_preconditionable(lpa)
+        for lpa in range(exp.read_impact_random_access_data_pages())
+    )
     pre_data_path = _write_pre_data(
         tmp_path,
         [_precondition_record(skipped_lpa), *[_precondition_record(lpa) for lpa in valid_lpas]],

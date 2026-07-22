@@ -55,8 +55,8 @@ class TestInvalidRequestErrorsTrace(unittest.TestCase):
         self.assertEqual(
             [req["error_message"] for req in requests],
             [
-                "SEARCH request must stay in static area",
-                "COMPUTE request must stay in static area",
+                "SEARCH request must stay in search area",
+                "COMPUTE request must stay in compute area",
                 "WRITE request must stay in random-access area; use STATIC_WRITE for static-area writes",
             ],
         )

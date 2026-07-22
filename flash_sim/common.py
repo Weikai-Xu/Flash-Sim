@@ -131,9 +131,17 @@ PAGE_NO_PER_COMPUTE_BANK = COMPUTE_MAX_PARALLEL_SL
 COMPUTE_BANK_PER_PLANE = BLOCK_PER_PLANE * SL_PER_BLOCK // COMPUTE_MAX_PARALLEL_SL
 SEARCH_BANK_PER_PLANE = SSL_PER_SL * SL_PER_BLOCK * BLOCK_PER_PLANE
 
+COMPUTE_CHIP_PER_CHANNEL = geometry.compute_chip_per_channel
+SEARCH_CHIP_PER_CHANNEL = geometry.search_chip_per_channel
 STATIC_CHIP_PER_CHANNEL = geometry.static_chip_per_channel
-STATIC_BASE_LHA = SECTOR_PER_PAGE * PAGE_PER_BLOCK * BLOCK_PER_PLANE * PLANE_PER_DIE \
-    * DIE_PER_CHIP * CHANNEL_NO * (CHIP_PER_CHANNEL - STATIC_CHIP_PER_CHANNEL) # 1610612736
+RESERVED_CHIP_PER_CHANNEL = geometry.reserved_chip_per_channel
+DATA_CHIP_PER_CHANNEL = geometry.random_access_chip_per_channel
+COMPUTE_BASE_LHA = geometry.compute_area_base_address
+COMPUTE_REGION_END_LHA = geometry.compute_area_end_address
+SEARCH_BASE_LHA = geometry.search_area_base_address
+SEARCH_REGION_END_LHA = geometry.search_area_end_address
+STATIC_BASE_LHA = geometry.static_area_base_address
+STATIC_REGION_END_LHA = geometry.static_area_end_address
 
 
 # ----- 常量 -----
@@ -163,7 +171,11 @@ def configure_event_runtime(new_geometry) -> None:
     global BLOCK_PER_PLANE, SL_PER_BLOCK, SSL_PER_SL, PAGE_PER_BLOCK, SECTOR_PER_PAGE
     global COMPUTE_MAX_PARALLEL_SL, SEARCH_MAX_PARALLEL_WL, PAGE_NO_PER_SEARCH_BANK
     global PAGE_NO_PER_COMPUTE_BANK, COMPUTE_BANK_PER_PLANE, SEARCH_BANK_PER_PLANE
-    global STATIC_CHIP_PER_CHANNEL, STATIC_BASE_LHA, LPA_NO_PER_MAPPING_PAGE
+    global COMPUTE_CHIP_PER_CHANNEL, SEARCH_CHIP_PER_CHANNEL
+    global STATIC_CHIP_PER_CHANNEL, RESERVED_CHIP_PER_CHANNEL, DATA_CHIP_PER_CHANNEL
+    global COMPUTE_BASE_LHA, COMPUTE_REGION_END_LHA
+    global SEARCH_BASE_LHA, SEARCH_REGION_END_LHA
+    global STATIC_BASE_LHA, STATIC_REGION_END_LHA, LPA_NO_PER_MAPPING_PAGE
 
     geometry = new_geometry
     CHANNEL_NO = int(new_geometry.channel_no)
@@ -181,16 +193,17 @@ def configure_event_runtime(new_geometry) -> None:
     PAGE_NO_PER_COMPUTE_BANK = COMPUTE_MAX_PARALLEL_SL * SSL_PER_SL
     COMPUTE_BANK_PER_PLANE = BLOCK_PER_PLANE * SL_PER_BLOCK // COMPUTE_MAX_PARALLEL_SL
     SEARCH_BANK_PER_PLANE = SSL_PER_SL * SL_PER_BLOCK * BLOCK_PER_PLANE
+    COMPUTE_CHIP_PER_CHANNEL = int(new_geometry.compute_chip_per_channel)
+    SEARCH_CHIP_PER_CHANNEL = int(new_geometry.search_chip_per_channel)
     STATIC_CHIP_PER_CHANNEL = int(new_geometry.static_chip_per_channel)
-    STATIC_BASE_LHA = (
-        SECTOR_PER_PAGE
-        * PAGE_PER_BLOCK
-        * BLOCK_PER_PLANE
-        * PLANE_PER_DIE
-        * DIE_PER_CHIP
-        * CHANNEL_NO
-        * (CHIP_PER_CHANNEL - STATIC_CHIP_PER_CHANNEL)
-    )
+    RESERVED_CHIP_PER_CHANNEL = int(new_geometry.reserved_chip_per_channel)
+    DATA_CHIP_PER_CHANNEL = int(new_geometry.random_access_chip_per_channel)
+    COMPUTE_BASE_LHA = int(new_geometry.compute_area_base_address)
+    COMPUTE_REGION_END_LHA = int(new_geometry.compute_area_end_address)
+    SEARCH_BASE_LHA = int(new_geometry.search_area_base_address)
+    SEARCH_REGION_END_LHA = int(new_geometry.search_area_end_address)
+    STATIC_BASE_LHA = int(new_geometry.static_area_base_address)
+    STATIC_REGION_END_LHA = int(new_geometry.static_area_end_address)
     LPA_NO_PER_MAPPING_PAGE = int(
         os.environ.get(
             "FLASHSIM_LPA_NO_PER_MAPPING_PAGE",

@@ -5,6 +5,7 @@ from flash_sim.FTL import Address_Mapping_Unit
 from flash_sim.HIL import HIL
 from flash_sim.PHY import PHY, PageType
 from flash_sim.common import (
+    COMPUTE_BASE_LHA,
     FlashAddress,
     INVALID_DATA,
     INVALID_MVPN,
@@ -15,6 +16,7 @@ from flash_sim.common import (
     Request,
     RequestFailure,
     RequestType,
+    SEARCH_BASE_LHA,
     SECTOR_PER_PAGE,
     STATIC_BASE_LHA,
     Transaction,
@@ -109,18 +111,18 @@ class TestRequestErrorHandling(unittest.TestCase):
         )
 
         self.assertEqual(req.status, REQUEST_STATUS_ERROR)
-        self.assertIn("static area", req.error_message)
+        self.assertIn("compute area", req.error_message)
         self.assertTrue(req.completion_sent)
         self.assertEqual(ftl.requests, [])
         self.assertEqual(len(host.pcie_link.sent), 1)
         message, _ = host.pcie_link.sent[0]
         self.assertEqual(message.type, MessageType.REQ_COMP)
         self.assertEqual(message.payload["status"], REQUEST_STATUS_ERROR)
-        self.assertIn("static area", message.payload["error_message"])
+        self.assertIn("compute area", message.payload["error_message"])
 
     def test_hil_compute_request_requires_selected_wl_before_data_fetch(self):
         hil, host, ftl = _make_hil()
-        req = Request(type=RequestType.COMPUTE, sq_id=0, lha_start=STATIC_BASE_LHA, size=1)
+        req = Request(type=RequestType.COMPUTE, sq_id=0, lha_start=COMPUTE_BASE_LHA, size=1)
 
         hil.receive_pcie_message(
             PCIe_message(type=MessageType.COMPUTE_REQ, payload={"req": req})
@@ -136,7 +138,7 @@ class TestRequestErrorHandling(unittest.TestCase):
         for selected_wl in (0, WL_PER_STRING - 1):
             req = Request(
                 type=RequestType.COMPUTE,
-                lha_start=STATIC_BASE_LHA,
+                lha_start=COMPUTE_BASE_LHA,
                 size=1,
                 selected_wl=selected_wl,
             )
@@ -145,12 +147,28 @@ class TestRequestErrorHandling(unittest.TestCase):
         for selected_wl in (-1, WL_PER_STRING):
             req = Request(
                 type=RequestType.COMPUTE,
-                lha_start=STATIC_BASE_LHA,
+                lha_start=COMPUTE_BASE_LHA,
                 size=1,
                 selected_wl=selected_wl,
             )
             with self.assertRaisesRegex(RequestFailure, "selected_wl"):
                 hil._validate_request_domain(req)
+
+    def test_hil_rejects_cross_region_cim_requests(self):
+        hil, _, _ = _make_hil()
+        with self.assertRaisesRegex(RequestFailure, "compute area"):
+            hil._validate_request_domain(
+                Request(
+                    type=RequestType.COMPUTE,
+                    lha_start=SEARCH_BASE_LHA,
+                    size=1,
+                    selected_wl=0,
+                )
+            )
+        with self.assertRaisesRegex(RequestFailure, "search area"):
+            hil._validate_request_domain(
+                Request(type=RequestType.SEARCH, lha_start=COMPUTE_BASE_LHA, size=1)
+            )
 
     def test_hil_invalid_write_to_static_does_not_register_cache_entry(self):
         hil, host, _ = _make_hil()

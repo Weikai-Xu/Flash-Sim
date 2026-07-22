@@ -6,9 +6,14 @@ import flash_sim.FTL as ftl_module
 from flash_sim.FTL import FTL, TSU
 from flash_sim.HIL import HIL
 from flash_sim.common import (
+    COMPUTE_BASE_LHA,
+    COMPUTE_CHIP_PER_CHANNEL,
+    DATA_CHIP_PER_CHANNEL,
     FlashAddress,
     Request,
     RequestType,
+    SEARCH_BASE_LHA,
+    SEARCH_CHIP_PER_CHANNEL,
     STATIC_BASE_LHA,
     Transaction,
     TransactionType,
@@ -54,13 +59,14 @@ def test_hil_segments_static_requests_at_ssl_granularity():
     hil.ftl = FTL.__new__(FTL)
     req = Request(
         type=RequestType.COMPUTE,
-        lha_start=STATIC_BASE_LHA,
+        lha_start=COMPUTE_BASE_LHA,
         size=5,
         selected_wl=3,
     )
 
     hil.segment(req)
 
+    assert {tr.address.chip for tr in req.transaction_list} == {DATA_CHIP_PER_CHANNEL}
     assert [tr.address.sub_plane for tr in req.transaction_list] == [0, 1, 2, 3, 4]
     assert [TSU._decode_static_sub_plane(tr.address.sub_plane) for tr in req.transaction_list] == [
         (0, 0, 0),
@@ -69,6 +75,20 @@ def test_hil_segments_static_requests_at_ssl_granularity():
         (0, 0, 3),
         (0, 1, 0),
     ]
+
+
+def test_static_address_mapping_uses_distinct_compute_search_chips():
+    ftl = FTL.__new__(FTL)
+
+    compute_addr = ftl.get_static_address(COMPUTE_BASE_LHA, RequestType.COMPUTE)
+    search_addr = ftl.get_static_address(SEARCH_BASE_LHA, RequestType.SEARCH)
+    static_addr = ftl.get_static_address(STATIC_BASE_LHA, RequestType.STATIC_WRITE)
+
+    assert compute_addr.chip == DATA_CHIP_PER_CHANNEL
+    assert search_addr.chip == DATA_CHIP_PER_CHANNEL + COMPUTE_CHIP_PER_CHANNEL
+    assert static_addr.chip == (
+        DATA_CHIP_PER_CHANNEL + COMPUTE_CHIP_PER_CHANNEL + SEARCH_CHIP_PER_CHANNEL
+    )
 
 
 def test_compute_selects_one_ssl_per_block_sl_but_allows_different_sls(monkeypatch):

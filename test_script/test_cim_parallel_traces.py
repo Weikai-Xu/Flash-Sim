@@ -10,7 +10,11 @@ import pytest
 
 from flash_sim.common import (
     BLOCK_PER_PLANE,
+    COMPUTE_BASE_LHA,
+    COMPUTE_REGION_END_LHA,
     PLANE_PER_DIE,
+    SEARCH_BASE_LHA,
+    SEARCH_REGION_END_LHA,
     SL_PER_BLOCK,
     SSL_PER_SL,
     STATIC_BASE_LHA,
@@ -21,7 +25,7 @@ from flash_sim.common import (
     Transaction,
     TransactionType,
 )
-from flash_sim.config import FlashConfig
+from flash_sim.config import FlashConfig, make_event_runtime_geometry
 from flash_sim.engine import Engine
 from flash_sim.PHY import onfi_data_in_duration, onfi_data_out_duration
 
@@ -89,7 +93,9 @@ def _peak_array_concurrency(report):
 
 
 def test_parallel_trace_addresses_match_default_runtime_geometry():
-    assert STATIC_BASE_LHA == 12_582_912
+    assert COMPUTE_BASE_LHA == 12_582_912
+    assert COMPUTE_REGION_END_LHA == SEARCH_BASE_LHA == 12_648_448
+    assert SEARCH_REGION_END_LHA == STATIC_BASE_LHA == 12_713_984
     assert SL_PER_BLOCK == 2
     assert SSL_PER_SL == 4
     assert BLOCK_PER_PLANE == 64
@@ -173,8 +179,10 @@ def test_search_full_die_uses_512_four_plane_waves():
 def test_compute_full_die_obeys_configured_sl_limit(
     compute_max_parallel_sl, expected_waves
 ):
-    config = FlashConfig.from_dict(
-        {"geometry": {"compute_max_parallel_sl": compute_max_parallel_sl}}
+    config = FlashConfig(
+        geometry=make_event_runtime_geometry(
+            compute_max_parallel_sl=compute_max_parallel_sl
+        )
     )
 
     report, output = _run_trace("compute_full_die.json", config=config)
@@ -203,19 +211,15 @@ def test_full_chip_reaches_four_die_peak_array_concurrency(trace_name, expected_
 
 
 def test_engine_propagates_cim_geometry_and_onfi_timing_to_runtime_layers():
-    config = FlashConfig.from_dict(
-        {
-            "onfi": {"channel_width_bytes": 16},
-            "geometry": {
-                "wl_per_string": 64,
-                "bl_per_plane": 131_072,
-                "search_input_bits_per_wl": 2,
-                "search_match_bits_per_bl": 2,
-                "compute_input_bits_per_sl": 4,
-                "compute_accumulator_bits": 4,
-                "compute_max_parallel_sl": 32,
-            },
-        }
+    config = FlashConfig.from_dict({"onfi": {"channel_width_bytes": 16}})
+    config.geometry = make_event_runtime_geometry(
+        wl_per_string=64,
+        bl_per_plane=131_072,
+        search_input_bits_per_wl=2,
+        search_match_bits_per_bl=2,
+        compute_input_bits_per_sl=4,
+        compute_accumulator_bits=4,
+        compute_max_parallel_sl=32,
     )
     engine = Engine(config=config)
     phy = engine.device.phy
@@ -261,7 +265,7 @@ def test_engine_propagates_cim_geometry_and_onfi_timing_to_runtime_layers():
     engine.device.hil._validate_request_domain(
         Request(
             type=RequestType.COMPUTE,
-            lha_start=STATIC_BASE_LHA,
+            lha_start=COMPUTE_BASE_LHA,
             size=1,
             selected_wl=63,
         )
@@ -270,7 +274,7 @@ def test_engine_propagates_cim_geometry_and_onfi_timing_to_runtime_layers():
         engine.device.hil._validate_request_domain(
             Request(
                 type=RequestType.COMPUTE,
-                lha_start=STATIC_BASE_LHA,
+                lha_start=COMPUTE_BASE_LHA,
                 size=1,
                 selected_wl=64,
             )

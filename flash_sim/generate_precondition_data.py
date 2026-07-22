@@ -32,22 +32,21 @@ from flash_sim.common import (
     BLOCK_PER_PLANE,
     PAGE_PER_BLOCK,
     SECTOR_PER_PAGE,
-    STATIC_CHIP_PER_CHANNEL,
+    DATA_CHIP_PER_CHANNEL,
     GC_WL_MANAGER_FREE_BLOCK_POOL_THRESHOLD,
 )
 
 
 def compute_max_lpa() -> int:
     """
-    计算非 static chip 范围内的最大合法 LPA（exclusive）。
+    计算 random-access data chip 范围内的最大合法 LPA（exclusive）。
 
     LPA 地址映射规则（低位到高位）：
         page_in_block < block_in_plane < plane_in_die < die_in_chip < chip < channel
     """
-    non_static_chips = CHIP_PER_CHANNEL - STATIC_CHIP_PER_CHANNEL
     max_lpa = (
         CHANNEL_NO
-        * non_static_chips
+        * DATA_CHIP_PER_CHANNEL
         * DIE_PER_CHIP
         * PLANE_PER_DIE
         * BLOCK_PER_PLANE
@@ -69,7 +68,7 @@ def compute_safe_num_data(max_lpa: int) -> int:
     # 全局 plane 数
     total_planes = (
         CHANNEL_NO
-        * (CHIP_PER_CHANNEL - STATIC_CHIP_PER_CHANNEL)
+        * DATA_CHIP_PER_CHANNEL
         * DIE_PER_CHIP
         * PLANE_PER_DIE
     )
@@ -132,7 +131,7 @@ def main():
 
     print(f"[generate_precondition_data] Flash geometry summary:")
     print(f"  CHANNEL_NO          = {CHANNEL_NO}")
-    print(f"  CHIP_PER_CHANNEL    = {CHIP_PER_CHANNEL}  (non-static: {CHIP_PER_CHANNEL - STATIC_CHIP_PER_CHANNEL})")
+    print(f"  CHIP_PER_CHANNEL    = {CHIP_PER_CHANNEL}  (data: {DATA_CHIP_PER_CHANNEL})")
     print(f"  DIE_PER_CHIP        = {DIE_PER_CHIP}")
     print(f"  PLANE_PER_DIE       = {PLANE_PER_DIE}")
     print(f"  BLOCK_PER_PLANE     = {BLOCK_PER_PLANE}")

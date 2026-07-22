@@ -12,6 +12,27 @@ from . import utils
 
 PlaneKey = tuple[int, int, int, int]
 
+
+def _data_chip_per_channel() -> int:
+    return CHIP_PER_CHANNEL - RESERVED_CHIP_PER_CHANNEL
+
+
+def _compute_chip_start() -> int:
+    return _data_chip_per_channel()
+
+
+def _search_chip_start() -> int:
+    return _compute_chip_start() + COMPUTE_CHIP_PER_CHANNEL
+
+
+def _static_write_chip_start() -> int:
+    return _search_chip_start() + SEARCH_CHIP_PER_CHANNEL
+
+
+def _chip_in_range(chip_id: int, start: int, count: int) -> bool:
+    return start <= chip_id < start + count
+
+
 class CMT:
     def __init__(self):
         self.cache: dict[int, cmt_entry] = {}
@@ -993,8 +1014,8 @@ class Block_Manager:
             print("=" * 80 + "\n")
 
     def _is_static_chip(self, chip_id: int) -> bool:
-        """判断 chip 是否为 static chip（用于 SEARCH/COMPUTE，从末尾分配）。"""
-        return chip_id >= self.chip_no_per_channel - STATIC_CHIP_PER_CHANNEL
+        """判断 chip 是否为 reserved compute/search/static-write chip."""
+        return chip_id >= _data_chip_per_channel()
 
     def _precondition_plane_from_data(
         self,
@@ -1554,24 +1575,28 @@ class TSU:
         ):
             chip_bke.No_of_active_dies = 0
             chip_bke.status = ChipStatus.IDLE
-        is_static = self.is_static_chip(chip_id)
         # #region agent log
         dispatched = False
         # #endregion
-        if is_static:
-            # SEARCH/COMPUTE-dedicated chip: handled separately
-            debug_info(f"[TSU] <try_activate> SEARCH/COMPUTE-dedicated chip {chip_id}")
+        if self.is_compute_chip(chip_id):
+            debug_info(f"[TSU] <try_activate> compute-dedicated chip {chip_id}")
             if self.try_compute(chip_id):
                 debug_info(f"[TSU] <try_activate> compute dispatched for chip {chip_id}")
                 dispatched = True
             else:
                 debug_info(f"[TSU] <try_activate> compute failed for chip {chip_id}")
-            if not dispatched and self.try_search(chip_id):
+            return dispatched
+        if self.is_search_chip(chip_id):
+            debug_info(f"[TSU] <try_activate> search-dedicated chip {chip_id}")
+            if self.try_search(chip_id):
                 debug_info(f"[TSU] <try_activate> search dispatched for chip {chip_id}")
                 dispatched = True
             else:
                 debug_info(f"[TSU] <try_activate> search failed for chip {chip_id}")
-            if not dispatched and self.try_static_write(chip_id):
+            return dispatched
+        if self.is_static_write_chip(chip_id):
+            debug_info(f"[TSU] <try_activate> static-write-dedicated chip {chip_id}")
+            if self.try_static_write(chip_id):
                 debug_info(f"[TSU] <try_activate> static write dispatched for chip {chip_id}")
                 dispatched = True
             else:
@@ -2108,8 +2133,23 @@ class TSU:
         return self.phy.channel_is_busy(channel_id)
 
     def is_static_chip(self, chip_id) -> bool:
-        """Returns True if chip is dedicated to SEARCH/COMPUTE. Must match get_static_address() which maps static sub_planes to chip 0..STATIC_CHIP_PER_CHANNEL-1."""
-        return chip_id[1] >= CHIP_PER_CHANNEL - STATIC_CHIP_PER_CHANNEL
+        """Returns True if chip is reserved for compute, search, or static-write."""
+        return chip_id[1] >= _data_chip_per_channel()
+
+    def is_compute_chip(self, chip_id) -> bool:
+        return _chip_in_range(
+            chip_id[1], _compute_chip_start(), COMPUTE_CHIP_PER_CHANNEL
+        )
+
+    def is_search_chip(self, chip_id) -> bool:
+        return _chip_in_range(
+            chip_id[1], _search_chip_start(), SEARCH_CHIP_PER_CHANNEL
+        )
+
+    def is_static_write_chip(self, chip_id) -> bool:
+        return _chip_in_range(
+            chip_id[1], _static_write_chip_start(), STATIC_CHIP_PER_CHANNEL
+        )
 
 
 class Address_Mapping_Domain:
@@ -2179,8 +2219,8 @@ class Address_Mapping_Unit:
         self.gtd: dict[int, GTDEntry] = {}
         self.block_manager: Block_Manager
         self.latest_mapping_write: dict[int, Transaction] = {}
-        # Random-access region excludes static chips.
-        non_static_chip_no = self.flash_geometry.chip_per_channel - self.flash_geometry.static_chip_per_channel
+        # Random-access region excludes compute/search/static-write chips.
+        non_static_chip_no = self.flash_geometry.random_access_chip_per_channel
         self.total_random_access_pages = (
             self.flash_geometry.channel_no
             * non_static_chip_no
@@ -2743,7 +2783,7 @@ class Address_Mapping_Unit:
             )
 
         g = self.flash_geometry
-        non_static_chip_no = g.chip_per_channel - g.static_chip_per_channel
+        non_static_chip_no = g.random_access_chip_per_channel
         pages_per_block = g.pages_per_block
         scheme = getattr(self, "_plane_allocation_scheme", "PAGE_LEVEL")
         if scheme == "CWDP":
@@ -2805,14 +2845,14 @@ class Address_Mapping_Unit:
         g = self.flash_geometry
         return (
             g.channel_no
-            * (g.chip_per_channel - g.static_chip_per_channel)
+            * g.random_access_chip_per_channel
             * g.dies
             * g.planes_per_die
         )
 
     def _data_plane_address_for_cwdp_index(self, plane_index: int) -> FlashAddress:
         g = self.flash_geometry
-        non_static_chip_no = g.chip_per_channel - g.static_chip_per_channel
+        non_static_chip_no = g.random_access_chip_per_channel
         plane_count = self._data_plane_count()
         if plane_count <= 0:
             raise ValueError("[AMU] no data planes available for write allocation")
@@ -2904,7 +2944,7 @@ class Address_Mapping_Unit:
             )
         scheme = getattr(self, "_plane_allocation_scheme", "PAGE_LEVEL")
         if scheme == "CWDP":
-            non_static_chip_no = CHIP_PER_CHANNEL - STATIC_CHIP_PER_CHANNEL
+            non_static_chip_no = DATA_CHIP_PER_CHANNEL
             channel_id = lpa % CHANNEL_NO
             chip_id = (lpa // CHANNEL_NO) % non_static_chip_no
             die_id = (lpa // (non_static_chip_no * CHANNEL_NO)) % DIE_PER_CHIP
@@ -2916,8 +2956,8 @@ class Address_Mapping_Unit:
             lpa //= PLANE_PER_DIE
             die_id = lpa % DIE_PER_CHIP
             lpa //= DIE_PER_CHIP
-            chip_id = lpa % CHIP_PER_CHANNEL
-            channel_id = lpa // CHIP_PER_CHANNEL
+            chip_id = lpa % DATA_CHIP_PER_CHANNEL
+            channel_id = lpa // DATA_CHIP_PER_CHANNEL
         address = FlashAddress(
             channel=channel_id,
             chip=chip_id,
@@ -3562,17 +3602,47 @@ class FTL:
         self.tsu.Validate_construction()
         self._construction_valid = True
     
-    def get_static_address(self, sub_plane_id: int) -> FlashAddress:
-        sub_plane_id = sub_plane_id - STATIC_BASE_LHA
-        sub_plane_address = sub_plane_id % (SL_PER_BLOCK * SSL_PER_SL * BLOCK_PER_PLANE)
-        sub_plane_id //= SL_PER_BLOCK * SSL_PER_SL * BLOCK_PER_PLANE
-        plane_address = sub_plane_id % PLANE_PER_DIE
-        sub_plane_id //= PLANE_PER_DIE
-        die_address = sub_plane_id % DIE_PER_CHIP
-        sub_plane_id //= DIE_PER_CHIP
-        chip_address = sub_plane_id % STATIC_CHIP_PER_CHANNEL + CHIP_PER_CHANNEL - STATIC_CHIP_PER_CHANNEL
-        sub_plane_id //= STATIC_CHIP_PER_CHANNEL
-        channel_address = sub_plane_id % CHANNEL_NO
+    def get_static_address(
+        self,
+        sub_plane_id: int,
+        request_type: RequestType = RequestType.STATIC_WRITE,
+    ) -> FlashAddress:
+        if request_type == RequestType.COMPUTE:
+            base_lha = COMPUTE_BASE_LHA
+            end_lha = COMPUTE_REGION_END_LHA
+            chip_start = _compute_chip_start()
+            chip_count = COMPUTE_CHIP_PER_CHANNEL
+        elif request_type == RequestType.SEARCH:
+            base_lha = SEARCH_BASE_LHA
+            end_lha = SEARCH_REGION_END_LHA
+            chip_start = _search_chip_start()
+            chip_count = SEARCH_CHIP_PER_CHANNEL
+        elif request_type == RequestType.STATIC_WRITE:
+            base_lha = STATIC_BASE_LHA
+            end_lha = STATIC_REGION_END_LHA
+            chip_start = _static_write_chip_start()
+            chip_count = STATIC_CHIP_PER_CHANNEL
+        else:
+            raise ValueError(f"Unsupported static address request type: {request_type!r}")
+
+        if chip_count <= 0:
+            raise ValueError(f"{request_type.value} region has no reserved chips")
+        if not base_lha <= sub_plane_id < end_lha:
+            raise ValueError(
+                f"{request_type.value} LHA {sub_plane_id} out of region "
+                f"[{base_lha}, {end_lha})"
+            )
+
+        offset = sub_plane_id - base_lha
+        sub_plane_address = offset % (SL_PER_BLOCK * SSL_PER_SL * BLOCK_PER_PLANE)
+        offset //= SL_PER_BLOCK * SSL_PER_SL * BLOCK_PER_PLANE
+        plane_address = offset % PLANE_PER_DIE
+        offset //= PLANE_PER_DIE
+        die_address = offset % DIE_PER_CHIP
+        offset //= DIE_PER_CHIP
+        chip_address = offset % chip_count + chip_start
+        offset //= chip_count
+        channel_address = offset % CHANNEL_NO
         address = FlashAddress(
             channel=channel_address,
             chip=chip_address,

@@ -3,6 +3,9 @@
 import copy
 
 import pytest
+import flash_sim.FTL as ftl_module
+import flash_sim.HIL as hil_module
+import flash_sim.common as common_module
 from flash_sim.common import SECTOR_SIZE_BYTES as COMMON_SECTOR_SIZE_BYTES
 from flash_sim.config import (
     SECTOR_SIZE_BYTES,
@@ -15,7 +18,9 @@ from flash_sim.config import (
     _required_pages_by_plane,
     build_flash_config,
     build_flash_config_for_capacity,
+    make_event_runtime_geometry,
 )
+from flash_sim.engine import _configure_runtime_from_flash_config
 
 
 def test_sector_size_is_fixed_at_512_bytes():
@@ -49,6 +54,96 @@ def test_build_flash_config_rejects_sector_size_override():
         build_flash_config(overrides={"sector_size_bytes": 64})
     with pytest.raises(ValueError, match="immutable"):
         build_flash_config({"geometry": {"sector_size_bytes": 64}})
+
+
+def test_geometry_derives_compute_search_static_region_bases():
+    geometry = FlashGeometry(
+        channel_no=2,
+        chip_per_channel=5,
+        dies=1,
+        planes_per_die=1,
+        blocks_per_plane=4,
+        layers_per_block=1,
+        sl_per_block=1,
+        ssl_per_sl=2,
+        sub_blocks_per_block=2,
+        sector_per_page=8,
+        compute_chip_per_channel=1,
+        search_chip_per_channel=2,
+        static_chip_per_channel=1,
+    )
+
+    assert geometry.random_access_chip_per_channel == 1
+    assert geometry.compute_area_base_address == 128
+    assert geometry.compute_region_lha_count == 16
+    assert geometry.search_region_lha_count == 32
+    assert geometry.static_region_lha_count == 16
+    assert geometry.compute_area_end_address == geometry.search_area_base_address
+    assert geometry.search_area_end_address == geometry.static_area_base_address
+    assert geometry.static_area_end_address == 192
+
+
+def test_geometry_region_chip_reservations_validate_and_round_trip():
+    source = {
+        "geometry": {
+            "channel_no": 1,
+            "chip_per_channel": 5,
+            "dies": 1,
+            "planes_per_die": 1,
+            "blocks_per_plane": 2,
+            "layers_per_block": 1,
+            "sl_per_block": 1,
+            "ssl_per_sl": 1,
+            "sub_blocks_per_block": 1,
+            "sector_per_page": 4,
+            "compute_chip_per_channel": 1,
+            "search_chip_per_channel": 1,
+            "static_chip_per_channel": 1,
+        }
+    }
+
+    config = FlashConfig.from_dict(source)
+    serialized = config.to_dict()["geometry"]
+    assert serialized["compute_chip_per_channel"] == 1
+    assert serialized["search_chip_per_channel"] == 1
+    assert serialized["static_chip_per_channel"] == 1
+    assert FlashConfig.from_dict(config.to_dict()).geometry.to_dict() == config.geometry.to_dict()
+
+    with pytest.raises(ValueError, match="reservation"):
+        FlashGeometry(chip_per_channel=3, compute_chip_per_channel=1, search_chip_per_channel=1, static_chip_per_channel=1)
+    with pytest.raises(ValueError, match="reservation"):
+        FlashGeometry(compute_chip_per_channel=-1)
+
+
+def test_runtime_constant_propagation_includes_region_bases():
+    original = FlashConfig(geometry=make_event_runtime_geometry())
+    config = FlashConfig.from_dict(
+        {
+            "geometry": {
+                "channel_no": 1,
+                "chip_per_channel": 4,
+                "dies": 1,
+                "planes_per_die": 1,
+                "blocks_per_plane": 2,
+                "layers_per_block": 1,
+                "sl_per_block": 1,
+                "ssl_per_sl": 2,
+                "sub_blocks_per_block": 2,
+                "sector_per_page": 4,
+                "compute_chip_per_channel": 1,
+                "search_chip_per_channel": 1,
+                "static_chip_per_channel": 1,
+            }
+        }
+    )
+    try:
+        _configure_runtime_from_flash_config(config)
+        assert common_module.COMPUTE_BASE_LHA == config.geometry.compute_area_base_address
+        assert hil_module.SEARCH_BASE_LHA == config.geometry.search_area_base_address
+        assert ftl_module.STATIC_REGION_END_LHA == config.geometry.static_area_end_address
+        assert ftl_module.DATA_CHIP_PER_CHANNEL == config.geometry.random_access_chip_per_channel
+    finally:
+        _configure_runtime_from_flash_config(original)
 
 
 def test_build_flash_config_for_capacity_grows_geometry_and_reports_capacity():

@@ -31,7 +31,7 @@ def _env_float(name: str, default: float) -> float:
 
 
 DEFAULT_CHANNEL_NO = 8
-DEFAULT_CHIP_PER_CHANNEL = 4
+DEFAULT_CHIP_PER_CHANNEL = 6
 DEFAULT_DIES = 4
 DEFAULT_PLANES_PER_DIE = 4
 DEFAULT_BLOCKS_PER_PLANE = 1024
@@ -49,6 +49,8 @@ DEFAULT_SEARCH_INPUT_BITS_PER_WL = 1
 DEFAULT_SEARCH_MATCH_BITS_PER_BL = 1
 DEFAULT_COMPUTE_INPUT_BITS_PER_SL = 8
 DEFAULT_COMPUTE_ACCUMULATOR_BITS = 8
+DEFAULT_COMPUTE_CHIP_PER_CHANNEL = 1
+DEFAULT_SEARCH_CHIP_PER_CHANNEL = 1
 DEFAULT_STATIC_CHIP_PER_CHANNEL = 1
 DEFAULT_DATA_CACHE_CAPACITY = 262144
 
@@ -97,6 +99,8 @@ def default_event_runtime_geometry(**overrides) -> "FlashGeometry":
         "search_match_bits_per_bl": DEFAULT_SEARCH_MATCH_BITS_PER_BL,
         "compute_input_bits_per_sl": DEFAULT_COMPUTE_INPUT_BITS_PER_SL,
         "compute_accumulator_bits": DEFAULT_COMPUTE_ACCUMULATOR_BITS,
+        "compute_chip_per_channel": DEFAULT_COMPUTE_CHIP_PER_CHANNEL,
+        "search_chip_per_channel": DEFAULT_SEARCH_CHIP_PER_CHANNEL,
         "static_chip_per_channel": DEFAULT_STATIC_CHIP_PER_CHANNEL,
         "valid_invalid_ratio": EVENT_RUNTIME_VALID_INVALID_RATIO,
         "preconditioning_cmt_ratio": EVENT_RUNTIME_PRECONDITIONING_CMT_RATIO,
@@ -239,6 +243,8 @@ class FlashGeometry:
     search_match_bits_per_bl: int = DEFAULT_SEARCH_MATCH_BITS_PER_BL
     compute_input_bits_per_sl: int = DEFAULT_COMPUTE_INPUT_BITS_PER_SL
     compute_accumulator_bits: int = DEFAULT_COMPUTE_ACCUMULATOR_BITS
+    compute_chip_per_channel: int = DEFAULT_COMPUTE_CHIP_PER_CHANNEL
+    search_chip_per_channel: int = DEFAULT_SEARCH_CHIP_PER_CHANNEL
     static_chip_per_channel: int = DEFAULT_STATIC_CHIP_PER_CHANNEL
     
     # ----- Preconditioning 参数 -----
@@ -263,6 +269,17 @@ class FlashGeometry:
             raise ValueError("chip_per_channel must be positive")
         if self.sector_per_page <= 0:
             raise ValueError("sector_per_page must be positive")
+        for name in (
+            "compute_chip_per_channel",
+            "search_chip_per_channel",
+            "static_chip_per_channel",
+        ):
+            if getattr(self, name) < 0:
+                raise ValueError(f"{name} reservation must be non-negative")
+        if self.reserved_chip_per_channel >= self.chip_per_channel:
+            raise ValueError(
+                "compute/search/static chip reservations must leave at least one random-access chip"
+            )
         for name in (
             "wl_per_string",
             "bl_per_plane",
@@ -371,18 +388,80 @@ class FlashGeometry:
         return self.ssl_per_sl * self.sl_per_block * self.blocks_per_plane
 
     @property
+    def reserved_chip_per_channel(self) -> int:
+        """Chips per channel reserved for compute, search, and static-write regions."""
+        return (
+            self.compute_chip_per_channel
+            + self.search_chip_per_channel
+            + self.static_chip_per_channel
+        )
+
+    @property
+    def random_access_chip_per_channel(self) -> int:
+        """Chips per channel available to ordinary random-access data."""
+        return self.chip_per_channel - self.reserved_chip_per_channel
+
+    @property
     def tot_random_sector_no(self) -> int:
-        """可用于随机访问的扇区总数（不含 static chip 部分）。"""
+        """可用于随机访问的扇区总数（不含 compute/search/static chip 部分）。"""
         return (
             self.sector_per_page * self.pages_per_block * self.blocks_per_plane
             * self.planes_per_die * self.dies * self.channel_no
-            * (self.chip_per_channel - self.static_chip_per_channel)
+            * self.random_access_chip_per_channel
         )
+
+    def _sub_plane_region_lha_count(self, chip_count: int) -> int:
+        return (
+            self.channel_no
+            * chip_count
+            * self.dies
+            * self.planes_per_die
+            * self.blocks_per_plane
+            * self.sl_per_block
+            * self.ssl_per_sl
+        )
+
+    @property
+    def compute_region_lha_count(self) -> int:
+        return self._sub_plane_region_lha_count(self.compute_chip_per_channel)
+
+    @property
+    def search_region_lha_count(self) -> int:
+        return self._sub_plane_region_lha_count(self.search_chip_per_channel)
+
+    @property
+    def static_region_lha_count(self) -> int:
+        return self._sub_plane_region_lha_count(self.static_chip_per_channel)
+
+    @property
+    def compute_area_base_address(self) -> int:
+        """COMPUTE area 的起始地址。"""
+        return self.tot_random_sector_no
+
+    @property
+    def compute_area_end_address(self) -> int:
+        """COMPUTE area 的结束地址（exclusive）。"""
+        return self.compute_area_base_address + self.compute_region_lha_count
+
+    @property
+    def search_area_base_address(self) -> int:
+        """SEARCH area 的起始地址。"""
+        return self.compute_area_end_address
+
+    @property
+    def search_area_end_address(self) -> int:
+        """SEARCH area 的结束地址（exclusive）。"""
+        return self.search_area_base_address + self.search_region_lha_count
     
     @property
     def static_area_base_address(self) -> int:
-        """static area 的起始地址。"""
-        return self.tot_random_sector_no//self.sector_per_page
+        """static-write area 的起始地址。"""
+        return self.search_area_end_address
+
+    @property
+    def static_area_end_address(self) -> int:
+        """static-write area 的结束地址（exclusive）。"""
+        return self.static_area_base_address + self.static_region_lha_count
 
     def to_dict(self) -> dict[str, int | float]:
         return {
@@ -398,6 +477,14 @@ class FlashGeometry:
             "sector_per_page": self.sector_per_page,
             "compute_max_parallel_sl": self.compute_max_parallel_sl,
             "search_max_parallel_wl": self.search_max_parallel_wl,
+            "wl_per_string": self.wl_per_string,
+            "bl_per_plane": self.bl_per_plane,
+            "search_input_bits_per_wl": self.search_input_bits_per_wl,
+            "search_match_bits_per_bl": self.search_match_bits_per_bl,
+            "compute_input_bits_per_sl": self.compute_input_bits_per_sl,
+            "compute_accumulator_bits": self.compute_accumulator_bits,
+            "compute_chip_per_channel": self.compute_chip_per_channel,
+            "search_chip_per_channel": self.search_chip_per_channel,
             "static_chip_per_channel": self.static_chip_per_channel,
             "valid_invalid_ratio": self.valid_invalid_ratio,
             "preconditioning_full_block_ratio": self.preconditioning_full_block_ratio,
@@ -864,6 +951,21 @@ class FlashConfig:
             max_parallel_blocks=parallel_dict.get("max_parallel_blocks", 8),
         )
 
+        legacy_reserved_geometry = (
+            (
+                "chip_per_channel" in geometry_dict
+                or "static_chip_per_channel" in geometry_dict
+            )
+            and "compute_chip_per_channel" not in geometry_dict
+            and "search_chip_per_channel" not in geometry_dict
+        )
+        default_compute_chip_per_channel = (
+            0 if legacy_reserved_geometry else DEFAULT_COMPUTE_CHIP_PER_CHANNEL
+        )
+        default_search_chip_per_channel = (
+            0 if legacy_reserved_geometry else DEFAULT_SEARCH_CHIP_PER_CHANNEL
+        )
+
         geometry = FlashGeometry(
             channel_no=geometry_dict.get("channel_no", DEFAULT_CHANNEL_NO),
             chip_per_channel=geometry_dict.get("chip_per_channel", DEFAULT_CHIP_PER_CHANNEL),
@@ -896,6 +998,12 @@ class FlashConfig:
             ),
             compute_accumulator_bits=geometry_dict.get(
                 "compute_accumulator_bits", DEFAULT_COMPUTE_ACCUMULATOR_BITS
+            ),
+            compute_chip_per_channel=geometry_dict.get(
+                "compute_chip_per_channel", default_compute_chip_per_channel
+            ),
+            search_chip_per_channel=geometry_dict.get(
+                "search_chip_per_channel", default_search_chip_per_channel
             ),
             static_chip_per_channel=geometry_dict.get(
                 "static_chip_per_channel", DEFAULT_STATIC_CHIP_PER_CHANNEL
@@ -1007,6 +1115,8 @@ class FlashConfig:
                 "search_match_bits_per_bl": self.geometry.search_match_bits_per_bl,
                 "compute_input_bits_per_sl": self.geometry.compute_input_bits_per_sl,
                 "compute_accumulator_bits": self.geometry.compute_accumulator_bits,
+                "compute_chip_per_channel": self.geometry.compute_chip_per_channel,
+                "search_chip_per_channel": self.geometry.search_chip_per_channel,
                 "static_chip_per_channel": self.geometry.static_chip_per_channel,
             },
             "runtime": {
@@ -1178,7 +1288,7 @@ def _placement_required_sectors(placement_ranges: list[Any] | None) -> int:
 
 
 def _random_data_sector_capacity(geometry: FlashGeometry) -> tuple[int, int, int]:
-    non_static_chips = geometry.chip_per_channel - geometry.static_chip_per_channel
+    non_static_chips = geometry.random_access_chip_per_channel
     total_random_pages = (
         geometry.channel_no
         * non_static_chips
@@ -1199,7 +1309,7 @@ def _plane_for_lpa(
     plane_allocation: str,
 ) -> tuple[int, int, int, int]:
     if plane_allocation == "CWDP":
-        non_static_chips = geometry.chip_per_channel - geometry.static_chip_per_channel
+        non_static_chips = geometry.random_access_chip_per_channel
         if non_static_chips <= 0:
             raise ValueError("CWDP plane allocation requires at least one non-static chip")
         value = int(lpa)
@@ -1219,8 +1329,8 @@ def _plane_for_lpa(
         value //= geometry.planes_per_die
         die_id = value % geometry.dies
         value //= geometry.dies
-        chip_id = value % geometry.chip_per_channel
-        channel_id = value // geometry.chip_per_channel
+        chip_id = value % geometry.random_access_chip_per_channel
+        channel_id = value // geometry.random_access_chip_per_channel
         return channel_id, chip_id, die_id, plane_id
 
     raise ValueError(f"unsupported plane_allocation value: {plane_allocation!r}")

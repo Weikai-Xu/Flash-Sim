@@ -26,18 +26,17 @@ else:
 
 from flash_sim.common import (
     BLOCK_PER_PLANE,
-    CHANNEL_NO,
-    CHIP_PER_CHANNEL,
+    COMPUTE_BASE_LHA,
+    COMPUTE_REGION_END_LHA,
     CMT_SIZE,
+    DATA_CHIP_PER_CHANNEL,
     DIE_PER_CHIP,
     LPA_NO_PER_MAPPING_PAGE,
     PAGE_PER_BLOCK,
     PLANE_PER_DIE,
     SECTOR_PER_PAGE,
-    SL_PER_BLOCK,
-    SSL_PER_SL,
-    STATIC_BASE_LHA,
-    STATIC_CHIP_PER_CHANNEL,
+    SEARCH_BASE_LHA,
+    SEARCH_REGION_END_LHA,
 )
 from flash_sim.config import make_event_runtime_geometry
 from flash_sim.engine import Engine
@@ -99,19 +98,30 @@ def normalize_path(path: str | Path) -> Path:
     return Path(path).expanduser().resolve()
 
 
-def static_region_end_exclusive() -> int:
-    return STATIC_BASE_LHA + (
-        CHANNEL_NO
-        * STATIC_CHIP_PER_CHANNEL
-        * DIE_PER_CHIP
-        * PLANE_PER_DIE
-        * BLOCK_PER_PLANE
-        * SL_PER_BLOCK
-        * SSL_PER_SL
-    )
+def _region_bounds_for_request_type(request_type: str) -> tuple[int, int]:
+    normalized_type = _validate_static_request_type(request_type)
+    if normalized_type == "compute":
+        return COMPUTE_BASE_LHA, COMPUTE_REGION_END_LHA
+    return SEARCH_BASE_LHA, SEARCH_REGION_END_LHA
 
 
-def validate_scan_sizes(sizes: Iterable[int]) -> tuple[int, ...]:
+def static_region_end_exclusive(request_type: str = "compute") -> int:
+    return _region_bounds_for_request_type(request_type)[1]
+
+
+def validate_scan_sizes(
+    sizes: Iterable[int],
+    request_type: str | None = None,
+) -> tuple[int, ...]:
+    if request_type is None:
+        capacities = [
+            COMPUTE_REGION_END_LHA - COMPUTE_BASE_LHA,
+            SEARCH_REGION_END_LHA - SEARCH_BASE_LHA,
+        ]
+        capacity = min(capacities)
+    else:
+        base_lha, end_lha = _region_bounds_for_request_type(request_type)
+        capacity = end_lha - base_lha
     validated: list[int] = []
     for size in sizes:
         try:
@@ -120,8 +130,8 @@ def validate_scan_sizes(sizes: Iterable[int]) -> tuple[int, ...]:
             raise ValueError(f"scan size must be an integer: {size!r}") from exc
         if numeric_size <= 0:
             raise ValueError(f"scan size must be positive: {numeric_size}")
-        if numeric_size > static_region_end_exclusive() - STATIC_BASE_LHA:
-            raise ValueError(f"scan size exceeds static region capacity: {numeric_size}")
+        if numeric_size > capacity:
+            raise ValueError(f"scan size exceeds {request_type or 'CIM'} region capacity: {numeric_size}")
         validated.append(numeric_size)
     if not validated:
         raise ValueError("at least one scan size is required")
@@ -135,12 +145,17 @@ def _validate_static_request_type(request_type: str) -> str:
     return normalized
 
 
-def static_start_lha_for_size(size: int, slot: int = 0) -> int:
-    size = validate_scan_sizes([size])[0]
+def static_start_lha_for_size(
+    size: int,
+    slot: int = 0,
+    request_type: str = "compute",
+) -> int:
+    size = validate_scan_sizes([size], request_type=request_type)[0]
     slot = max(0, int(slot))
-    capacity = static_region_end_exclusive() - STATIC_BASE_LHA
+    base_lha, end_lha = _region_bounds_for_request_type(request_type)
+    capacity = end_lha - base_lha
     offset = min(slot * size, capacity - size)
-    return STATIC_BASE_LHA + offset
+    return base_lha + offset
 
 
 def build_static_request_command(
@@ -151,11 +166,15 @@ def build_static_request_command(
     slot: int = 0,
 ) -> dict[str, int | str]:
     normalized_type = _validate_static_request_type(request_type)
-    numeric_size = validate_scan_sizes([size])[0]
+    numeric_size = validate_scan_sizes([size], request_type=normalized_type)[0]
     command = {
         "type": normalized_type,
         "time": int(time_ns),
-        "start_lha": static_start_lha_for_size(numeric_size, slot=slot),
+        "start_lha": static_start_lha_for_size(
+            numeric_size,
+            slot=slot,
+            request_type=normalized_type,
+        ),
         "size": numeric_size,
     }
     if normalized_type == "compute":
@@ -176,7 +195,7 @@ def plan_size_scan_traces(
                 {
                     "request_type": normalized_type,
                     "size": size,
-                    "commands": [build_static_request_command(normalized_type, size, slot=index)],
+            "commands": [build_static_request_command(normalized_type, size, slot=index)],
                 }
             )
     return plans
@@ -201,7 +220,7 @@ def write_single_request_trace(
     commands: list[dict[str, Any]] | None = None,
 ) -> Path:
     request_type = _validate_static_request_type(request_type)
-    size = validate_scan_sizes([size])[0]
+    size = validate_scan_sizes([size], request_type=request_type)[0]
     if commands is None:
         commands = [build_static_request_command(request_type, size)]
     trace_path = normalize_path(output_root) / "traces" / "size_scan" / trace_filename(
@@ -488,7 +507,7 @@ def read_impact_cmt_warm_capacity() -> int:
 
 def read_impact_random_access_data_pages() -> int:
     geometry = make_event_runtime_geometry()
-    non_static_chip_no = geometry.chip_per_channel - geometry.static_chip_per_channel
+    non_static_chip_no = geometry.random_access_chip_per_channel
     total_random_access_pages = (
         geometry.channel_no
         * non_static_chip_no
@@ -514,7 +533,7 @@ def read_impact_lpa_chip(lpa: int) -> int:
     rem = lpa // pages_per_plane
     rem //= PLANE_PER_DIE
     rem //= DIE_PER_CHIP
-    return rem % CHIP_PER_CHANNEL
+    return rem % DATA_CHIP_PER_CHANNEL
 
 
 def read_impact_lpa_is_preconditionable(lpa: int) -> bool:
@@ -522,7 +541,7 @@ def read_impact_lpa_is_preconditionable(lpa: int) -> bool:
         chip = read_impact_lpa_chip(lpa)
     except ValueError:
         return False
-    return chip < CHIP_PER_CHANNEL - STATIC_CHIP_PER_CHANNEL
+    return chip < DATA_CHIP_PER_CHANNEL
 
 
 def validate_read_impact_page_reads(read_commands: list[dict[str, Any]]) -> None:
@@ -655,7 +674,7 @@ def build_compute_prefix_commands(
     *,
     compute_size: int = DEFAULT_CONTENTION_COMPUTE_SIZE,
 ) -> list[dict[str, int | str]]:
-    compute_size = validate_scan_sizes([compute_size])[0]
+    compute_size = validate_scan_sizes([compute_size], request_type="compute")[0]
     return [
         build_static_request_command("compute", compute_size, time_ns=0, slot=0),
         build_static_request_command("compute", compute_size, time_ns=0, slot=1),
@@ -700,7 +719,7 @@ def insert_compute_commands_for_read_impact(
     compute_size: int,
 ) -> tuple[list[dict[str, Any]], int]:
     validate_read_impact_page_reads(read_commands)
-    compute_size = validate_scan_sizes([compute_size])[0]
+    compute_size = validate_scan_sizes([compute_size], request_type="compute")[0]
     compute_count = read_impact_compute_count(len(read_commands), ratio)
     anchor_counts: dict[int, int] = {}
     for anchor in read_impact_insertion_anchors(len(read_commands), compute_count):
@@ -793,7 +812,7 @@ def build_read_impact_trace_plans(
             )
         )
 
-    for compute_size in validate_scan_sizes(size_scan_values):
+    for compute_size in validate_scan_sizes(size_scan_values, request_type="compute"):
         commands, compute_count = insert_compute_commands_for_read_impact(
             baseline,
             ratio=READ_IMPACT_FIXED_SIZE_SCAN_RATIO,

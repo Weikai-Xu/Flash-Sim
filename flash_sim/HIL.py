@@ -52,24 +52,28 @@ class HIL:
     def pcie_link(self):
         return self.host.pcie_link
 
-    def _static_region_end_exclusive(self) -> int:
-        return STATIC_BASE_LHA + (
-            CHANNEL_NO
-            * STATIC_CHIP_PER_CHANNEL
-            * DIE_PER_CHIP
-            * PLANE_PER_DIE
-            * BLOCK_PER_PLANE
-            * SL_PER_BLOCK
-            * SSL_PER_SL
+    def _range_in_region(self, start_lha: int, size: int, base: int, end: int) -> bool:
+        end_lha = start_lha + size
+        return base <= start_lha and end_lha <= end
+
+    def _range_is_compute(self, start_lha: int, size: int) -> bool:
+        return self._range_in_region(
+            start_lha, size, COMPUTE_BASE_LHA, COMPUTE_REGION_END_LHA
         )
 
-    def _range_is_static(self, start_lha: int, size: int) -> bool:
-        end_lha = start_lha + size
-        return STATIC_BASE_LHA <= start_lha and end_lha <= self._static_region_end_exclusive()
+    def _range_is_search(self, start_lha: int, size: int) -> bool:
+        return self._range_in_region(
+            start_lha, size, SEARCH_BASE_LHA, SEARCH_REGION_END_LHA
+        )
+
+    def _range_is_static_write(self, start_lha: int, size: int) -> bool:
+        return self._range_in_region(
+            start_lha, size, STATIC_BASE_LHA, STATIC_REGION_END_LHA
+        )
 
     def _range_is_random_access(self, start_lha: int, size: int) -> bool:
         end_lha = start_lha + size
-        return 0 <= start_lha and end_lha <= STATIC_BASE_LHA
+        return 0 <= start_lha and end_lha <= COMPUTE_BASE_LHA
 
     def _request_brief(self, req: Request) -> str:
         return (
@@ -93,10 +97,20 @@ class HIL:
                 )
             return
 
-        if req.type in (RequestType.SEARCH, RequestType.COMPUTE, RequestType.STATIC_WRITE):
-            if not self._range_is_static(req.lha_start, req.size):
+        if req.type == RequestType.COMPUTE:
+            if not self._range_is_compute(req.lha_start, req.size):
+                raise RequestFailure("COMPUTE request must stay in compute area")
+            return
+
+        if req.type == RequestType.SEARCH:
+            if not self._range_is_search(req.lha_start, req.size):
+                raise RequestFailure("SEARCH request must stay in search area")
+            return
+
+        if req.type == RequestType.STATIC_WRITE:
+            if not self._range_is_static_write(req.lha_start, req.size):
                 raise RequestFailure(
-                    f"{req.type.value} request must stay in static area"
+                    "STATIC_WRITE request must stay in static-write area"
                 )
 
     def _finalize_request(self, req: Request, status: str, error_message: str | None = None):
@@ -167,7 +181,7 @@ class HIL:
             size = req.size
             for i in range(size):
                 sub_plane_id = req.lha_start + i
-                address = self.ftl.get_static_address(sub_plane_id)
+                address = self.ftl.get_static_address(sub_plane_id, req.type)
                 lpa = utils.translate_lha_to_lpa(sub_plane_id)
                 tr_type = (
                     TransactionType.USER_SEARCH

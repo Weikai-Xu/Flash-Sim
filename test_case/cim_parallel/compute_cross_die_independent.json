@@ -1,9 +1,10 @@
 [
   {
-    "type": "search",
+    "type": "compute",
     "time": 0,
     "start_lha": 12582919,
-    "size": 1
+    "size": 1,
+    "selected_wl": 0
   },
   {
     "type": "compute",

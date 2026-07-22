@@ -33,14 +33,13 @@ if __package__ in (None, ""):
 from flash_sim.common import (
     BLOCK_PER_PLANE,
     CHANNEL_NO,
-    CHIP_PER_CHANNEL,
+    DATA_CHIP_PER_CHANNEL,
     DIE_PER_CHIP,
     GC_WL_MANAGER_FREE_BLOCK_POOL_THRESHOLD,
     LPA_NO_PER_MAPPING_PAGE,
     PAGE_PER_BLOCK,
     PLANE_PER_DIE,
     SECTOR_PER_PAGE,
-    STATIC_CHIP_PER_CHANNEL,
 )
 
 # ---------------------------------------------------------------------------
@@ -48,10 +47,9 @@ from flash_sim.common import (
 # ---------------------------------------------------------------------------
 
 _PAGES_PER_PLANE = BLOCK_PER_PLANE * PAGE_PER_BLOCK  # 512
-_NON_STATIC_CHIPS = CHIP_PER_CHANNEL - STATIC_CHIP_PER_CHANNEL  # 3
 
 _TOTAL_RANDOM_ACCESS_PAGES = (
-    CHANNEL_NO * _NON_STATIC_CHIPS * DIE_PER_CHIP * PLANE_PER_DIE * _PAGES_PER_PLANE
+    CHANNEL_NO * DATA_CHIP_PER_CHANNEL * DIE_PER_CHIP * PLANE_PER_DIE * _PAGES_PER_PLANE
 )  # 196_608
 
 _MAPPING_PAGE_COUNT = math.ceil(_TOTAL_RANDOM_ACCESS_PAGES / LPA_NO_PER_MAPPING_PAGE)  # 768
@@ -88,8 +86,8 @@ def plane_key_for_lpa(lpa: int) -> tuple[int, int, int, int]:
     plane_value //= PLANE_PER_DIE
     die = plane_value % DIE_PER_CHIP
     plane_value //= DIE_PER_CHIP
-    chip = plane_value % CHIP_PER_CHANNEL
-    channel = plane_value // CHIP_PER_CHANNEL
+    chip = plane_value % DATA_CHIP_PER_CHANNEL
+    channel = plane_value // DATA_CHIP_PER_CHANNEL
     return (channel, chip, die, plane)
 
 

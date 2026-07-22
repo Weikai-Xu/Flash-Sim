@@ -7,6 +7,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
+from flash_sim.common import COMPUTE_BASE_LHA
 from flash_sim.engine import Engine
 from flash_sim.request_latency_report import CSV_COLUMN_NAMES
 
@@ -63,7 +64,7 @@ class TestRequestLatencyReportEndToEnd(unittest.TestCase):
             {
                 "type": "compute",
                 "time": 0,
-                "start_lha": 12_582_912,
+                "start_lha": COMPUTE_BASE_LHA,
                 "size": 2,
                 "selected_wl": 17,
             }

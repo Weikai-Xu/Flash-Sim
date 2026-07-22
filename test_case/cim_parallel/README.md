@@ -2,7 +2,9 @@
 
 These traces use the default event-runtime geometry:
 
-- static base LHA: `12,582,912`
+- compute base LHA: `12,582,912`
+- search base LHA: `12,648,448`
+- static-write base LHA: `12,713,984`
 - SSL units per SL: `4`
 - SSL units per block: `2 * 4 = 8`
 - blocks per plane in the event runtime: `64`
@@ -30,10 +32,9 @@ Expected array-execution behavior:
 “Parallel” means that the raw `phy_array_exec` intervals overlap. “Serial” means
 that the first array interval ends before the second starts.
 
-The multi-request traces begin with an unrelated array-operation blocker. It keeps
+The multi-request traces begin with an unrelated same-region array-operation blocker. It keeps
 the chip occupied long enough for both target requests to enter TSU, so the test
-measures die-wave selection rather than PCIe request-arrival ordering. The blocker
-uses SEARCH before COMPUTE targets and COMPUTE before SEARCH targets.
+measures die-wave selection rather than PCIe request-arrival ordering.
 
 The full-die traces cover all `2,048` SSL addresses in die 0. For COMPUTE,
 each plane contributes `64 blocks * 2 SL = 128` active transactions, so a die
@@ -41,5 +42,5 @@ wave contains `128 * 4 planes = 512` transactions and four SSL rounds are
 required. SEARCH admits one transaction per plane, so it requires 512 waves of
 four transactions.
 
-The full-chip traces cover all `8,192` SSL addresses in the event runtime's
-single static chip and verify that the four dies select waves independently.
+The full-chip traces cover all `8,192` SSL addresses in one compute or search
+chip region and verify that the four dies select waves independently.

@@ -29,11 +29,11 @@ The generator SHALL derive some random-access `read` requests from records alrea
 - **THEN** the generated trace MUST contain a later `read` request that overlaps at least part of that written range
 
 ### Requirement: Generated traces include all four primary request families with legal address domains
-The generator SHALL emit at least one `read`, `write`, `search`, and `compute` command in the same trace. Random-access `read` and `write` commands MUST stay below `STATIC_BASE_LHA`, and `search` and `compute` commands MUST stay inside the static-area range implied by the current event-driven runtime geometry.
+The generator SHALL emit at least one `read`, `write`, `search`, and `compute` command in the same trace. Random-access `read` and `write` commands MUST stay below `COMPUTE_BASE_LHA`; `compute` commands MUST stay inside the compute region; and `search` commands MUST stay inside the search region implied by the current event-driven runtime geometry.
 
-#### Scenario: Random-access and static requests stay in-bounds
+#### Scenario: Random-access and CIM requests stay in-bounds
 - **WHEN** the generator writes the final trace
-- **THEN** every `read` and `write` entry MUST target the random-access region, and every `search` and `compute` entry MUST target the static region
+- **THEN** every `read` and `write` entry MUST target the random-access region, every `compute` entry MUST target the compute region, and every `search` entry MUST target the search region
 
 #### Scenario: All primary request families are present
 - **WHEN** the generator writes the final trace
